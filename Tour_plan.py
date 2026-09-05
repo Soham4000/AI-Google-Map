@@ -682,6 +682,11 @@ def get_transport_route(
 # historical places, best areas for an activity, etc.)
 # so they can be marked as pins on the map, instead of
 # just being mentioned as text by the AI.
+#
+# Returns a list of NORMALIZED place dicts:
+# {"name", "address", "rating", "lat", "lon", "maps_url"}
+# so both this and the free fallback below can be drawn
+# on the map the same way.
 # ============================================================
 
 def search_places_text(
@@ -763,13 +768,61 @@ def search_places_text(
 
             return [], error_message
 
-        places = data.get("places", [])
+        raw_places = data.get("places", [])
 
-        if not places:
+        if not raw_places:
 
             return [], "ZERO_RESULTS"
 
-        return places, "OK"
+        normalized_places = []
+
+        for place in raw_places:
+
+            location = place.get(
+                "location",
+                {}
+            )
+
+            place_lat = location.get("latitude")
+            place_lon = location.get("longitude")
+
+            if place_lat is None or place_lon is None:
+
+                continue
+
+            normalized_places.append({
+
+                "name": (
+                    place
+                    .get("displayName", {})
+                    .get("text", "Unnamed place")
+                ),
+
+                "address": place.get(
+                    "formattedAddress",
+                    "Address unavailable"
+                ),
+
+                "rating": place.get(
+                    "rating",
+                    "N/A"
+                ),
+
+                "lat": place_lat,
+
+                "lon": place_lon,
+
+                "maps_url": place.get(
+                    "googleMapsUri"
+                )
+
+            })
+
+        if not normalized_places:
+
+            return [], "ZERO_RESULTS"
+
+        return normalized_places, "OK"
 
     except Exception as e:
 
@@ -777,13 +830,190 @@ def search_places_text(
 
 
 # ============================================================
+# FREE FALLBACK PLACE SEARCH (NO API KEY NEEDED)
+# ============================================================
+#
+# If Google Places fails (key not enabled, no billing,
+# quota, etc.) this uses the free public Nominatim
+# (OpenStreetMap) search API so hotels/attractions can
+# still be marked without requiring any API key at all.
+# Nominatim has no rating field, so "rating" is always
+# "N/A" for these results.
+# ============================================================
+
+def search_places_nominatim(
+    query,
+    lat,
+    lon,
+    radius_km=40,
+    max_results=8
+):
+
+    url = "https://nominatim.openstreetmap.org/search"
+
+    # Build a rough bounding box around the location so
+    # results stay near the destination.
+
+    degree_radius = radius_km / 111.0
+
+    viewbox = (
+        f"{lon - degree_radius},{lat + degree_radius},"
+        f"{lon + degree_radius},{lat - degree_radius}"
+    )
+
+    params = {
+
+        "q": query,
+
+        "format": "jsonv2",
+
+        "limit": max_results,
+
+        "viewbox": viewbox,
+
+        "bounded": 1,
+
+        "addressdetails": 1
+
+    }
+
+    headers = {
+
+        "User-Agent": "ai_travel_movie_planner"
+
+    }
+
+    try:
+
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20
+        )
+
+        results = response.json()
+
+        if not results:
+
+            return [], "ZERO_RESULTS"
+
+        normalized_places = []
+
+        for result in results:
+
+            try:
+
+                place_lat = float(result.get("lat"))
+                place_lon = float(result.get("lon"))
+
+            except (TypeError, ValueError):
+
+                continue
+
+            display_name = result.get(
+                "display_name",
+                "Unnamed place"
+            )
+
+            short_name = display_name.split(",")[0]
+
+            normalized_places.append({
+
+                "name": short_name,
+
+                "address": display_name,
+
+                "rating": "N/A",
+
+                "lat": place_lat,
+
+                "lon": place_lon,
+
+                "maps_url": (
+                    "https://www.openstreetmap.org/"
+                    f"?mlat={place_lat}&mlon={place_lon}"
+                    "#map=17/"
+                    f"{place_lat}/{place_lon}"
+                )
+
+            })
+
+        if not normalized_places:
+
+            return [], "ZERO_RESULTS"
+
+        return normalized_places, "OK"
+
+    except Exception as e:
+
+        return [], str(e)
+
+
+# ============================================================
+# FIND PLACES (WITH AUTOMATIC FREE FALLBACK)
+# ============================================================
+#
+# Tries Google Places first. If that fails to return any
+# results (API not enabled, no billing, quota, etc.), it
+# automatically retries with the free Nominatim search so
+# something still gets marked on the map.
+#
+# Returns: (places, source, status)
+#   source is "google" or "nominatim_fallback"
+# ============================================================
+
+def find_places(
+    query,
+    lat,
+    lon,
+    radius=40000,
+    max_results=8
+):
+
+    google_places, google_status = search_places_text(
+        query,
+        lat,
+        lon,
+        radius=radius,
+        max_results=max_results
+    )
+
+    if google_places:
+
+        return google_places, "google", google_status
+
+    fallback_radius_km = max(radius / 1000, 5)
+
+    nominatim_places, nominatim_status = (
+        search_places_nominatim(
+            query,
+            lat,
+            lon,
+            radius_km=fallback_radius_km,
+            max_results=max_results
+        )
+    )
+
+    if nominatim_places:
+
+        return (
+            nominatim_places,
+            "nominatim_fallback",
+            nominatim_status
+        )
+
+    return [], "none", google_status
+
+
+# ============================================================
 # ADD PLACES TO MAP
 # ============================================================
 #
-# Drops a marker for every place returned by
-# search_places_text() onto a folium map, with a
-# popup showing name, address, rating and a Google
-# Maps link.
+# Drops a marker for every NORMALIZED place dict (from
+# either search_places_text() or
+# search_places_nominatim()) onto a folium map, with a
+# popup showing name, address, rating and a maps link.
 # ============================================================
 
 def add_places_to_map(
@@ -798,14 +1028,13 @@ def add_places_to_map(
 
     for place in places:
 
-        name = (
-            place
-            .get("displayName", {})
-            .get("text", label_prefix)
+        name = place.get(
+            "name",
+            label_prefix
         )
 
         address = place.get(
-            "formattedAddress",
+            "address",
             "Address unavailable"
         )
 
@@ -814,15 +1043,10 @@ def add_places_to_map(
             "N/A"
         )
 
-        location = place.get(
-            "location",
-            {}
-        )
+        latitude = place.get("lat")
+        longitude = place.get("lon")
 
-        latitude = location.get("latitude")
-        longitude = location.get("longitude")
-
-        maps_url = place.get("googleMapsUri")
+        maps_url = place.get("maps_url")
 
         if latitude is None or longitude is None:
 
@@ -838,7 +1062,7 @@ def add_places_to_map(
 
             popup_html += (
                 f"<br><a href='{maps_url}' "
-                "target='_blank'>Open in Google Maps</a>"
+                "target='_blank'>Open in Maps</a>"
             )
 
         folium.Marker(
@@ -1867,10 +2091,12 @@ if st.session_state.show_result:
         "🏨 Finding hotels to mark on the map..."
     ):
 
-        hotel_places, hotel_status = search_places_text(
-            hotel_query,
-            dest_location.latitude,
-            dest_location.longitude
+        hotel_places, hotel_source, hotel_status = (
+            find_places(
+                hotel_query,
+                dest_location.latitude,
+                dest_location.longitude
+            )
         )
 
     if hotel_places:
@@ -1882,6 +2108,14 @@ if st.session_state.show_result:
             icon_name="bed",
             label_prefix="Hotel"
         )
+
+        if hotel_source == "nominatim_fallback":
+
+            st.caption(
+                "🏨 Hotels marked using free "
+                "OpenStreetMap search (Google "
+                "Places was unavailable)."
+            )
 
     else:
 
@@ -1895,87 +2129,124 @@ if st.session_state.show_result:
     # "PLACES YOU WANT TO VISIT" MARKERS ON THE MAP
     # ========================================================
 
-    if places_to_visit != "No Preference":
+    if places_to_visit == "No Preference":
+
+        places_query = (
+            f"popular tourist attractions near "
+            f"{destination}"
+        )
+
+        places_label = "Attraction"
+
+    else:
 
         places_query = (
             f"best {places_to_visit.lower()} "
             f"to visit near {destination}"
         )
 
-        with st.spinner(
-            f"🗺️ Marking {places_to_visit.lower()} "
-            f"near {destination}..."
-        ):
+        places_label = places_to_visit
 
-            attraction_places, attraction_status = (
-                search_places_text(
-                    places_query,
-                    dest_location.latitude,
-                    dest_location.longitude
-                )
+    with st.spinner(
+        f"🗺️ Marking {places_label.lower()} "
+        f"near {destination}..."
+    ):
+
+        attraction_places, attraction_source, attraction_status = (
+            find_places(
+                places_query,
+                dest_location.latitude,
+                dest_location.longitude
             )
+        )
 
-        if attraction_places:
+    if attraction_places:
 
-            add_places_to_map(
-                attraction_places,
-                route_map,
-                color="purple",
-                icon_name="star",
-                label_prefix=places_to_visit
-            )
+        add_places_to_map(
+            attraction_places,
+            route_map,
+            color="purple",
+            icon_name="star",
+            label_prefix=places_label
+        )
 
-        else:
+        if attraction_source == "nominatim_fallback":
 
             st.caption(
-                f"🗺️ No {places_to_visit.lower()} "
-                "could be marked on the map. "
-                f"Reason: **{attraction_status}**."
+                f"🗺️ {places_label} marked using "
+                "free OpenStreetMap search (Google "
+                "Places was unavailable)."
             )
+
+    else:
+
+        st.caption(
+            f"🗺️ No {places_label.lower()} "
+            "could be marked on the map. "
+            f"Reason: **{attraction_status}**."
+        )
 
 
     # ========================================================
     # "BEST AREAS FOR YOUR ACTIVITY" MARKERS ON THE MAP
     # ========================================================
 
-    if activities != "No Preference":
+    if activities == "No Preference":
+
+        activity_query = (
+            f"best things to do near {destination}"
+        )
+
+        activity_label = "Best Area"
+
+    else:
 
         activity_query = (
             f"best places for {activities.lower()} "
             f"near {destination}"
         )
 
-        with st.spinner(
-            f"🏃 Marking the best areas for "
-            f"{activities.lower()}..."
-        ):
+        activity_label = activities
 
-            activity_places, activity_status = (
-                search_places_text(
-                    activity_query,
-                    dest_location.latitude,
-                    dest_location.longitude
-                )
+    with st.spinner(
+        f"🏃 Marking the best areas for "
+        f"{activity_label.lower()}..."
+    ):
+
+        activity_places, activity_source, activity_status = (
+            find_places(
+                activity_query,
+                dest_location.latitude,
+                dest_location.longitude
             )
+        )
 
-        if activity_places:
+    if activity_places:
 
-            add_places_to_map(
-                activity_places,
-                route_map,
-                color="orange",
-                icon_name="flag",
-                label_prefix=activities
-            )
+        add_places_to_map(
+            activity_places,
+            route_map,
+            color="orange",
+            icon_name="flag",
+            label_prefix=activity_label
+        )
 
-        else:
+        if activity_source == "nominatim_fallback":
 
             st.caption(
-                f"🏃 No best areas for "
-                f"{activities.lower()} could be "
-                f"marked on the map. "
-                f"Reason: **{activity_status}**."
+                f"🏃 {activity_label} areas marked "
+                "using free OpenStreetMap search "
+                "(Google Places was unavailable)."
             )
+
+    else:
+
+        st.caption(
+            f"🏃 No best areas for "
+            f"{activity_label.lower()} could be "
+            f"marked on the map. "
+            f"Reason: **{activity_status}**."
+        )
 
 
     # ========================================================
@@ -1986,20 +2257,10 @@ if st.session_state.show_result:
         "🟢 Start",
         "🔴 Destination",
         "🔵 Route",
-        "🟤 Hotels"
+        "🟤 Hotels",
+        f"🟣 {places_label}",
+        f"🟠 {activity_label}"
     ]
-
-    if places_to_visit != "No Preference":
-
-        legend_parts.append(
-            f"🟣 {places_to_visit}"
-        )
-
-    if activities != "No Preference":
-
-        legend_parts.append(
-            f"🟠 Best areas for {activities}"
-        )
 
     st.caption(
         "  ·  ".join(legend_parts)
