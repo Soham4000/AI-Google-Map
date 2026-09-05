@@ -506,11 +506,26 @@ def search_places_text(
 
         data = response.json()
 
-        return data.get("places", [])
+        if "error" in data:
 
-    except Exception:
+            error_message = data["error"].get(
+                "message",
+                "Unknown Places API error"
+            )
 
-        return []
+            return [], error_message
+
+        places = data.get("places", [])
+
+        if not places:
+
+            return [], "ZERO_RESULTS"
+
+        return places, "OK"
+
+    except Exception as e:
+
+        return [], str(e)
 
 
 # ============================================================
@@ -1445,7 +1460,13 @@ if st.session_state.show_result:
 
         st.warning(
             f"⚠️ Could not calculate the "
-            f"{transport.lower()} route."
+            f"{transport.lower()} route. "
+            f"Reason: **{route_status}**. "
+            "This usually means the Directions API "
+            "is not enabled (or billing is not "
+            "enabled) for your Google Maps API key, "
+            "or the transit mode has no data for "
+            "this route."
         )
 
 
@@ -1465,7 +1486,7 @@ if st.session_state.show_result:
         "🏨 Finding hotels to mark on the map..."
     ):
 
-        hotel_places = search_places_text(
+        hotel_places, hotel_status = search_places_text(
             hotel_query,
             dest_location.latitude,
             dest_location.longitude
@@ -1484,8 +1505,8 @@ if st.session_state.show_result:
     else:
 
         st.caption(
-            "🏨 No hotels could be found to mark "
-            "on the map for this destination."
+            "🏨 No hotels could be marked on the "
+            f"map. Reason: **{hotel_status}**."
         )
 
 
@@ -1505,10 +1526,12 @@ if st.session_state.show_result:
             f"near {destination}..."
         ):
 
-            attraction_places = search_places_text(
-                places_query,
-                dest_location.latitude,
-                dest_location.longitude
+            attraction_places, attraction_status = (
+                search_places_text(
+                    places_query,
+                    dest_location.latitude,
+                    dest_location.longitude
+                )
             )
 
         if attraction_places:
@@ -1525,7 +1548,8 @@ if st.session_state.show_result:
 
             st.caption(
                 f"🗺️ No {places_to_visit.lower()} "
-                "could be found to mark on the map."
+                "could be marked on the map. "
+                f"Reason: **{attraction_status}**."
             )
 
 
@@ -1545,10 +1569,12 @@ if st.session_state.show_result:
             f"{activities.lower()}..."
         ):
 
-            activity_places = search_places_text(
-                activity_query,
-                dest_location.latitude,
-                dest_location.longitude
+            activity_places, activity_status = (
+                search_places_text(
+                    activity_query,
+                    dest_location.latitude,
+                    dest_location.longitude
+                )
             )
 
         if activity_places:
@@ -1566,7 +1592,8 @@ if st.session_state.show_result:
             st.caption(
                 f"🏃 No best areas for "
                 f"{activities.lower()} could be "
-                "found to mark on the map."
+                f"marked on the map. "
+                f"Reason: **{activity_status}**."
             )
 
 
