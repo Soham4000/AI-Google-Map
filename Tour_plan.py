@@ -42,7 +42,7 @@ except Exception:
 # GEMINI MODEL
 # ============================================================
 
-model = genai.GenerativeModel("gemini-3.7-flash")
+model = genai.GenerativeModel("gemini-3.6-flash")
 
 
 # ============================================================
