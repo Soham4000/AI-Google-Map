@@ -181,37 +181,93 @@ def get_google_route(
 
         if data.get("status") != "OK":
 
-            return None, data.get(
-                "status",
-                "UNKNOWN_ERROR"
+            return (
+                None,
+                data.get(
+                    "status",
+                    "UNKNOWN_ERROR"
+                ),
+                None
             )
 
         routes = data.get("routes", [])
 
         if not routes:
 
-            return None, "NO_ROUTE"
+            return None, "NO_ROUTE", None
 
         route = routes[0]
 
-        overview = route.get(
-            "overview_polyline",
-            {}
-        )
+        legs = route.get("legs", [])
 
-        encoded = overview.get("points")
+        # ------------------------------------------------
+        # Build the path by stitching together every
+        # step's own polyline, instead of only the coarse
+        # overview polyline. This hugs every turn on the
+        # actual road, the same way Google Maps itself
+        # draws a route.
+        # ------------------------------------------------
 
-        if not encoded:
+        coordinates = []
 
-            return None, "NO_POLYLINE"
+        for leg in legs:
 
-        coordinates = decode_polyline(encoded)
+            for step in leg.get("steps", []):
 
-        return coordinates, "OK"
+                step_polyline = (
+                    step
+                    .get("polyline", {})
+                    .get("points")
+                )
+
+                if not step_polyline:
+
+                    continue
+
+                step_coords = decode_polyline(
+                    step_polyline
+                )
+
+                if coordinates and step_coords:
+
+                    # Drop the first point of each new
+                    # step, since it duplicates the last
+                    # point of the previous step.
+
+                    step_coords = step_coords[1:]
+
+                coordinates.extend(step_coords)
+
+        if not coordinates:
+
+            overview = route.get(
+                "overview_polyline",
+                {}
+            )
+
+            encoded = overview.get("points")
+
+            if not encoded:
+
+                return None, "NO_POLYLINE", None
+
+            coordinates = decode_polyline(encoded)
+
+        duration_text = None
+
+        if legs:
+
+            duration_text = (
+                legs[0]
+                .get("duration", {})
+                .get("text")
+            )
+
+        return coordinates, "OK", duration_text
 
     except Exception as e:
 
-        return None, str(e)
+        return None, str(e), None
 
 
 # ============================================================
@@ -408,7 +464,7 @@ def get_transport_route(
             destination_lon
         )
 
-        return coordinates, "OK"
+        return coordinates, "OK", None
 
 
     # --------------------------------------------------------
@@ -1364,13 +1420,14 @@ if st.session_state.show_result:
 
     route_coordinates = None
     route_status = None
+    route_duration_text = None
 
 
     with st.spinner(
         f"🗺️ Calculating {transport.lower()} route..."
     ):
 
-        route_coordinates, route_status = (
+        route_coordinates, route_status, route_duration_text = (
             get_transport_route(
 
                 current_location.latitude,
@@ -1440,9 +1497,9 @@ if st.session_state.show_result:
 
             locations=route_coordinates,
 
-            color="blue",
+            color="#a8c7fa",
 
-            weight=6,
+            weight=11,
 
             opacity=0.9,
 
@@ -1450,9 +1507,70 @@ if st.session_state.show_result:
 
         ).add_to(route_map)
 
+        folium.PolyLine(
+
+            locations=route_coordinates,
+
+            color="#1a73e8",
+
+            weight=6,
+
+            opacity=1.0,
+
+            tooltip=route_name
+
+        ).add_to(route_map)
+
+
+        # ----------------------------------------------------
+        # DURATION CHIP, LIKE THE "11 min" BUBBLE GOOGLE
+        # MAPS SHOWS ALONG THE ROUTE.
+        # ----------------------------------------------------
+
+        if route_duration_text:
+
+            midpoint_index = len(route_coordinates) // 2
+
+            midpoint = route_coordinates[midpoint_index]
+
+            chip_html = (
+                "<div style='"
+                "background:#1a73e8;"
+                "color:white;"
+                "padding:4px 12px;"
+                "border-radius:14px;"
+                "font-weight:bold;"
+                "font-size:13px;"
+                "white-space:nowrap;"
+                "box-shadow:0 1px 4px rgba(0,0,0,0.5);"
+                "border:2px solid white;"
+                f"'>{route_duration_text}</div>"
+            )
+
+            folium.Marker(
+
+                midpoint,
+
+                icon=folium.DivIcon(
+                    html=chip_html
+                ),
+
+                tooltip=(
+                    f"{route_name} — "
+                    f"{route_duration_text}"
+                )
+
+            ).add_to(route_map)
+
 
         st.success(
-            f"✅ {route_name} displayed."
+            f"✅ {route_name} displayed"
+            + (
+                f" ({route_duration_text})"
+                if route_duration_text
+                else ""
+            )
+            + "."
         )
 
 
