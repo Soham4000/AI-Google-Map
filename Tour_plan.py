@@ -427,6 +427,179 @@ def get_transport_route(
 
 
 # ============================================================
+# GOOGLE PLACES TEXT SEARCH
+# ============================================================
+#
+# Used to find real, named places (hotels, beaches,
+# historical places, best areas for an activity, etc.)
+# so they can be marked as pins on the map, instead of
+# just being mentioned as text by the AI.
+# ============================================================
+
+def search_places_text(
+    query,
+    lat,
+    lon,
+    radius=40000,
+    max_results=8
+):
+
+    url = (
+        "https://places.googleapis.com/v1/"
+        "places:searchText"
+    )
+
+    headers = {
+
+        "Content-Type":
+            "application/json",
+
+        "X-Goog-Api-Key":
+            GOOGLE_API_KEY,
+
+        "X-Goog-FieldMask":
+            (
+                "places.displayName,"
+                "places.formattedAddress,"
+                "places.location,"
+                "places.rating,"
+                "places.googleMapsUri"
+            )
+    }
+
+    body = {
+
+        "textQuery":
+            query,
+
+        "maxResultCount":
+            max_results,
+
+        "locationBias": {
+
+            "circle": {
+
+                "center": {
+
+                    "latitude":
+                        lat,
+
+                    "longitude":
+                        lon
+
+                },
+
+                "radius":
+                    float(radius)
+            }
+        }
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=20
+        )
+
+        data = response.json()
+
+        return data.get("places", [])
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
+# ADD PLACES TO MAP
+# ============================================================
+#
+# Drops a marker for every place returned by
+# search_places_text() onto a folium map, with a
+# popup showing name, address, rating and a Google
+# Maps link.
+# ============================================================
+
+def add_places_to_map(
+    places,
+    target_map,
+    color,
+    icon_name,
+    label_prefix
+):
+
+    marker_points = []
+
+    for place in places:
+
+        name = (
+            place
+            .get("displayName", {})
+            .get("text", label_prefix)
+        )
+
+        address = place.get(
+            "formattedAddress",
+            "Address unavailable"
+        )
+
+        rating = place.get(
+            "rating",
+            "N/A"
+        )
+
+        location = place.get(
+            "location",
+            {}
+        )
+
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+
+        maps_url = place.get("googleMapsUri")
+
+        if latitude is None or longitude is None:
+
+            continue
+
+        popup_html = (
+            f"<b>{label_prefix}: {name}</b><br>"
+            f"{address}<br>"
+            f"⭐ Rating: {rating}"
+        )
+
+        if maps_url:
+
+            popup_html += (
+                f"<br><a href='{maps_url}' "
+                "target='_blank'>Open in Google Maps</a>"
+            )
+
+        folium.Marker(
+            [latitude, longitude],
+            tooltip=f"{label_prefix}: {name}",
+            popup=folium.Popup(
+                popup_html,
+                max_width=300
+            ),
+            icon=folium.Icon(
+                color=color,
+                icon=icon_name,
+                prefix="fa"
+            )
+        ).add_to(target_map)
+
+        marker_points.append(
+            [latitude, longitude]
+        )
+
+    return marker_points
+
+
+# ============================================================
 # TRAVEL FORM
 # ============================================================
 
@@ -1277,6 +1450,155 @@ if st.session_state.show_result:
 
 
     # ========================================================
+    # HOTEL MARKERS ON THE MAP
+    # ========================================================
+
+    if hotel_type == "No Preference":
+
+        hotel_query = f"hotels in {destination}"
+
+    else:
+
+        hotel_query = f"{hotel_type} in {destination}"
+
+    with st.spinner(
+        "🏨 Finding hotels to mark on the map..."
+    ):
+
+        hotel_places = search_places_text(
+            hotel_query,
+            dest_location.latitude,
+            dest_location.longitude
+        )
+
+    if hotel_places:
+
+        add_places_to_map(
+            hotel_places,
+            route_map,
+            color="darkred",
+            icon_name="bed",
+            label_prefix="Hotel"
+        )
+
+    else:
+
+        st.caption(
+            "🏨 No hotels could be found to mark "
+            "on the map for this destination."
+        )
+
+
+    # ========================================================
+    # "PLACES YOU WANT TO VISIT" MARKERS ON THE MAP
+    # ========================================================
+
+    if places_to_visit != "No Preference":
+
+        places_query = (
+            f"best {places_to_visit.lower()} "
+            f"to visit near {destination}"
+        )
+
+        with st.spinner(
+            f"🗺️ Marking {places_to_visit.lower()} "
+            f"near {destination}..."
+        ):
+
+            attraction_places = search_places_text(
+                places_query,
+                dest_location.latitude,
+                dest_location.longitude
+            )
+
+        if attraction_places:
+
+            add_places_to_map(
+                attraction_places,
+                route_map,
+                color="purple",
+                icon_name="star",
+                label_prefix=places_to_visit
+            )
+
+        else:
+
+            st.caption(
+                f"🗺️ No {places_to_visit.lower()} "
+                "could be found to mark on the map."
+            )
+
+
+    # ========================================================
+    # "BEST AREAS FOR YOUR ACTIVITY" MARKERS ON THE MAP
+    # ========================================================
+
+    if activities != "No Preference":
+
+        activity_query = (
+            f"best places for {activities.lower()} "
+            f"near {destination}"
+        )
+
+        with st.spinner(
+            f"🏃 Marking the best areas for "
+            f"{activities.lower()}..."
+        ):
+
+            activity_places = search_places_text(
+                activity_query,
+                dest_location.latitude,
+                dest_location.longitude
+            )
+
+        if activity_places:
+
+            add_places_to_map(
+                activity_places,
+                route_map,
+                color="orange",
+                icon_name="flag",
+                label_prefix=activities
+            )
+
+        else:
+
+            st.caption(
+                f"🏃 No best areas for "
+                f"{activities.lower()} could be "
+                "found to mark on the map."
+            )
+
+
+    # ========================================================
+    # MAP LEGEND
+    # ========================================================
+
+    legend_parts = [
+        "🟢 Start",
+        "🔴 Destination",
+        "🔵 Route",
+        "🟤 Hotels"
+    ]
+
+    if places_to_visit != "No Preference":
+
+        legend_parts.append(
+            f"🟣 {places_to_visit}"
+        )
+
+    if activities != "No Preference":
+
+        legend_parts.append(
+            f"🟠 Best areas for {activities}"
+        )
+
+    st.caption(
+        "  ·  ".join(legend_parts)
+    )
+
+
+    # ========================================================
     # SHOW MAP
     # ========================================================
 
@@ -1357,31 +1679,29 @@ and travel times.
 
 
     # ========================================================
-    # TABS
+    # SINGLE COMBINED GEMINI CALL
+    # ========================================================
+    #
+    # All four AI sections (travel options, hotels,
+    # itinerary and movie recommendations) are generated
+    # from ONE Gemini API call instead of four separate
+    # calls, so the Gemini API key is only used once per
+    # trip generated, not four times.
     # ========================================================
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        [
-            "🚆 Travel Options",
-            "🏨 Hotels",
-            "🗓️ Itinerary",
-            "🎬 AI Movie Finder"
-        ]
-    )
+    combined_prompt = f"""
+You are an expert AI travel planner AND an expert
+movie recommendation AI, combined into a single
+assistant for this task.
 
+You must produce FOUR separate sections in a single
+response. Each section MUST start and end with the
+EXACT markers shown below, each on its own line, with
+nothing else on that line. Do not add any commentary
+before ###SECTION:TRAVEL_OPTIONS### or after
+###END:MOVIES###.
 
-    # ========================================================
-    # TRAVEL OPTIONS
-    # ========================================================
-
-    with tab1:
-
-        st.subheader(
-            "🚆 AI Travel Options"
-        )
-
-        travel_prompt = f"""
-You are an expert AI travel planner.
+###SECTION:TRAVEL_OPTIONS###
 
 User request:
 
@@ -1420,42 +1740,10 @@ Consider:
 
 Do not claim real-time prices
 or availability.
-"""
 
-        with st.spinner(
-            "🤖 AI is analyzing travel options..."
-        ):
+###END:TRAVEL_OPTIONS###
 
-            try:
-
-                response = model.generate_content(
-                    travel_prompt
-                )
-
-                st.write(
-                    response.text
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Travel recommendation "
-                    f"failed: {e}"
-                )
-
-
-    # ========================================================
-    # HOTELS
-    # ========================================================
-
-    with tab2:
-
-        st.subheader(
-            "🏨 AI Hotel Recommendations"
-        )
-
-        hotel_prompt = f"""
-You are an expert AI travel planner.
+###SECTION:HOTELS###
 
 User requirements:
 
@@ -1487,42 +1775,10 @@ For each hotel include:
 
 Do not claim real-time availability.
 Prices must be described as approximate.
-"""
 
-        with st.spinner(
-            "🏨 AI is finding suitable hotels..."
-        ):
+###END:HOTELS###
 
-            try:
-
-                response = model.generate_content(
-                    hotel_prompt
-                )
-
-                st.write(
-                    response.text
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Hotel recommendation "
-                    f"failed: {e}"
-                )
-
-
-    # ========================================================
-    # ITINERARY
-    # ========================================================
-
-    with tab3:
-
-        st.subheader(
-            f"🗓️ {number_of_days}-Day Itinerary"
-        )
-
-        itinerary_prompt = f"""
-You are an expert AI travel planner.
+###SECTION:ITINERARY###
 
 Create a personalized
 {number_of_days}-day itinerary
@@ -1568,56 +1824,12 @@ Do not overload each day.
 Consider travel time between attractions.
 
 Do not claim real-time availability.
-"""
 
-        with st.spinner(
-            "🗓️ AI is creating your itinerary..."
-        ):
+###END:ITINERARY###
 
-            try:
+###SECTION:MOVIES###
 
-                response = model.generate_content(
-                    itinerary_prompt
-                )
-
-                st.write(
-                    response.text
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Itinerary generation "
-                    f"failed: {e}"
-                )
-
-
-    # ========================================================
-    # MOVIE FINDER
-    # ========================================================
-
-    with tab4:
-
-        st.subheader(
-            "🎬 AI Movie Finder"
-        )
-
-        st.write(
-            f"📍 Theater search location: "
-            f"**{movie_location}**"
-        )
-
-        st.write(
-            f"😊 Your mood: **{movie_mood}**"
-        )
-
-
-        # ====================================================
-        # MOVIE RECOMMENDATIONS
-        # ====================================================
-
-        movie_prompt = f"""
-You are an expert movie recommendation AI.
+You are also acting as a movie recommendation AI here.
 
 The user's mood is:
 
@@ -1654,36 +1866,262 @@ For every movie provide:
 6. Why it matches the mood
 7. Mood match score from 1-100
 
-IMPORTANT:
-
 Do not invent current showtimes.
 
 Do not claim that a movie is currently
 playing in a theater.
 
 Focus on movie recommendations.
+
+###END:MOVIES###
+
+Remember: use ALL user preferences, do not ignore the
+custom instruction, and never invent real-time
+availability, prices or showtimes anywhere in your
+response.
 """
 
-        with st.spinner(
-            "🤖 AI is understanding your mood..."
-        ):
 
-            try:
+    def extract_section(full_text, section_name):
 
-                response = model.generate_content(
-                    movie_prompt
-                )
+        start_marker = f"###SECTION:{section_name}###"
+        end_marker = f"###END:{section_name}###"
 
-                st.write(
-                    response.text
-                )
+        start_index = full_text.find(start_marker)
+        end_index = full_text.find(end_marker)
 
-            except Exception as e:
+        if start_index == -1 or end_index == -1:
 
-                st.error(
-                    f"❌ Movie recommendation "
-                    f"failed: {e}"
-                )
+            return None
+
+        start_index += len(start_marker)
+
+        return full_text[start_index:end_index].strip()
+
+
+    ai_error = None
+
+    travel_options_text = None
+    hotel_text = None
+    itinerary_text = None
+    movie_text = None
+
+    with st.spinner(
+        "🤖 AI is planning your entire trip "
+        "(travel options, hotels, itinerary and "
+        "movies) in a single request..."
+    ):
+
+        try:
+
+            combined_response = model.generate_content(
+                combined_prompt
+            )
+
+            full_ai_text = combined_response.text
+
+            travel_options_text = extract_section(
+                full_ai_text,
+                "TRAVEL_OPTIONS"
+            )
+
+            hotel_text = extract_section(
+                full_ai_text,
+                "HOTELS"
+            )
+
+            itinerary_text = extract_section(
+                full_ai_text,
+                "ITINERARY"
+            )
+
+            movie_text = extract_section(
+                full_ai_text,
+                "MOVIES"
+            )
+
+            # ------------------------------------------------
+            # If the model did not follow the section markers
+            # exactly, fall back to showing the full raw
+            # response in every tab instead of calling the
+            # API again just to retry the format.
+            # ------------------------------------------------
+
+            if not any(
+                [
+                    travel_options_text,
+                    hotel_text,
+                    itinerary_text,
+                    movie_text
+                ]
+            ):
+
+                travel_options_text = full_ai_text
+                hotel_text = full_ai_text
+                itinerary_text = full_ai_text
+                movie_text = full_ai_text
+
+        except Exception as e:
+
+            ai_error = str(e)
+
+
+    # ========================================================
+    # TABS
+    # ========================================================
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            "🚆 Travel Options",
+            "🏨 Hotels",
+            "🗓️ Itinerary",
+            "🎬 AI Movie Finder"
+        ]
+    )
+
+
+    # ========================================================
+    # TRAVEL OPTIONS
+    # ========================================================
+
+    with tab1:
+
+        st.subheader(
+            "🚆 AI Travel Options"
+        )
+
+        if ai_error:
+
+            st.error(
+                f"❌ Travel recommendation "
+                f"failed: {ai_error}"
+            )
+
+        elif travel_options_text:
+
+            st.write(
+                travel_options_text
+            )
+
+        else:
+
+            st.warning(
+                "⚠️ The travel options section "
+                "was not returned by the AI."
+            )
+
+
+    # ========================================================
+    # HOTELS
+    # ========================================================
+
+    with tab2:
+
+        st.subheader(
+            "🏨 AI Hotel Recommendations"
+        )
+
+        if ai_error:
+
+            st.error(
+                f"❌ Hotel recommendation "
+                f"failed: {ai_error}"
+            )
+
+        elif hotel_text:
+
+            st.write(
+                hotel_text
+            )
+
+        else:
+
+            st.warning(
+                "⚠️ The hotel recommendations "
+                "section was not returned by the AI."
+            )
+
+
+    # ========================================================
+    # ITINERARY
+    # ========================================================
+
+    with tab3:
+
+        st.subheader(
+            f"🗓️ {number_of_days}-Day Itinerary"
+        )
+
+        if ai_error:
+
+            st.error(
+                f"❌ Itinerary generation "
+                f"failed: {ai_error}"
+            )
+
+        elif itinerary_text:
+
+            st.write(
+                itinerary_text
+            )
+
+        else:
+
+            st.warning(
+                "⚠️ The itinerary section was "
+                "not returned by the AI."
+            )
+
+
+    # ========================================================
+    # MOVIE FINDER
+    # ========================================================
+
+    with tab4:
+
+        st.subheader(
+            "🎬 AI Movie Finder"
+        )
+
+        st.write(
+            f"📍 Theater search location: "
+            f"**{movie_location}**"
+        )
+
+        st.write(
+            f"😊 Your mood: **{movie_mood}**"
+        )
+
+
+        # ====================================================
+        # MOVIE RECOMMENDATIONS
+        # ====================================================
+
+        st.caption(
+            "🎬 Movie recommendations below come "
+            "from the same single AI request used "
+            "for the rest of your trip plan."
+        )
+
+        if ai_error:
+
+            st.error(
+                f"❌ Movie recommendation "
+                f"failed: {ai_error}"
+            )
+
+        elif movie_text:
+
+            st.write(
+                movie_text
+            )
+
+        else:
+
+            st.warning(
+                "⚠️ The movie recommendations "
+                "section was not returned by the AI."
+            )
 
 
         # ====================================================
@@ -2134,4 +2572,3 @@ Focus on movie recommendations.
         st.session_state.show_result = False
 
         st.rerun()
-
