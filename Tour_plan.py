@@ -363,6 +363,107 @@ def create_flight_path(
 
 
 # ============================================================
+# FREE FALLBACK ROUTE (NO API KEY NEEDED)
+# ============================================================
+#
+# If Google Directions fails (key not enabled, no
+# billing, quota, etc.) this uses the free public OSRM
+# routing server so a real, road-following line can
+# still be drawn without requiring any API key at all.
+# ============================================================
+
+def get_osrm_route(
+    source_lat,
+    source_lon,
+    destination_lat,
+    destination_lon,
+    profile="driving"
+):
+
+    url = (
+        "https://router.project-osrm.org/route/v1/"
+        f"{profile}/"
+        f"{source_lon},{source_lat};"
+        f"{destination_lon},{destination_lat}"
+    )
+
+    params = {
+        "overview": "full",
+        "geometries": "geojson"
+    }
+
+    try:
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=30
+        )
+
+        data = response.json()
+
+        if data.get("code") != "Ok":
+
+            return (
+                None,
+                data.get("code", "OSRM_ERROR"),
+                None
+            )
+
+        routes = data.get("routes", [])
+
+        if not routes:
+
+            return None, "NO_ROUTE", None
+
+        route = routes[0]
+
+        geometry = route.get("geometry", {})
+
+        raw_coordinates = geometry.get(
+            "coordinates",
+            []
+        )
+
+        # OSRM returns [lon, lat] pairs, folium/leaflet
+        # need [lat, lon].
+
+        coordinates = [
+            [point[1], point[0]]
+            for point in raw_coordinates
+        ]
+
+        duration_seconds = route.get("duration")
+
+        duration_text = None
+
+        if duration_seconds is not None:
+
+            total_minutes = round(
+                duration_seconds / 60
+            )
+
+            if total_minutes < 60:
+
+                duration_text = f"{total_minutes} min"
+
+            else:
+
+                hours = total_minutes // 60
+                minutes = total_minutes % 60
+
+                duration_text = (
+                    f"{hours} hr {minutes} min"
+                )
+
+        return coordinates, "OK", duration_text
+
+    except Exception as e:
+
+        return None, str(e), None
+
+
+# ============================================================
 # ROUTE BASED ON TRANSPORT
 # ============================================================
 
@@ -374,19 +475,30 @@ def get_transport_route(
     transport
 ):
 
+    coordinates = None
+    status = None
+    duration_text = None
+
+    osrm_profile = None
+
+
     # --------------------------------------------------------
     # CAR
     # --------------------------------------------------------
 
     if transport == "Car":
 
-        return get_google_route(
-            source_lat,
-            source_lon,
-            destination_lat,
-            destination_lon,
-            mode="driving"
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="driving"
+            )
         )
+
+        osrm_profile = "driving"
 
 
     # --------------------------------------------------------
@@ -395,14 +507,22 @@ def get_transport_route(
 
     elif transport == "Bus":
 
-        return get_google_route(
-            source_lat,
-            source_lon,
-            destination_lat,
-            destination_lon,
-            mode="transit",
-            transit_mode="bus"
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="transit",
+                transit_mode="bus"
+            )
         )
+
+        # Buses run on roads, so a driving path is a
+        # reasonable stand-in when transit data is
+        # unavailable for this route.
+
+        osrm_profile = "driving"
 
 
     # --------------------------------------------------------
@@ -411,14 +531,21 @@ def get_transport_route(
 
     elif transport == "Train":
 
-        return get_google_route(
-            source_lat,
-            source_lon,
-            destination_lat,
-            destination_lon,
-            mode="transit",
-            transit_mode="train"
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="transit",
+                transit_mode="train"
+            )
         )
+
+        # Trains run on rail, not roads, so there is no
+        # sensible OSRM road profile to fall back on.
+
+        osrm_profile = None
 
 
     # --------------------------------------------------------
@@ -427,13 +554,17 @@ def get_transport_route(
 
     elif transport == "Walking":
 
-        return get_google_route(
-            source_lat,
-            source_lon,
-            destination_lat,
-            destination_lon,
-            mode="walking"
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="walking"
+            )
         )
+
+        osrm_profile = "walking"
 
 
     # --------------------------------------------------------
@@ -442,13 +573,17 @@ def get_transport_route(
 
     elif transport == "Bicycle":
 
-        return get_google_route(
-            source_lat,
-            source_lon,
-            destination_lat,
-            destination_lon,
-            mode="bicycling"
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="bicycling"
+            )
         )
+
+        osrm_profile = "cycling"
 
 
     # --------------------------------------------------------
@@ -473,13 +608,70 @@ def get_transport_route(
 
     else:
 
-        return get_google_route(
+        coordinates, status, duration_text = (
+            get_google_route(
+                source_lat,
+                source_lon,
+                destination_lat,
+                destination_lon,
+                mode="driving"
+            )
+        )
+
+        osrm_profile = "driving"
+
+
+    # ----------------------------------------------------
+    # FALLBACK 1: FREE OSRM ROUTING, NO API KEY NEEDED.
+    # Used only when Google Directions did not return a
+    # usable path.
+    # ----------------------------------------------------
+
+    if not coordinates and osrm_profile:
+
+        (
+            osrm_coordinates,
+            osrm_status,
+            osrm_duration_text
+        ) = get_osrm_route(
             source_lat,
             source_lon,
             destination_lat,
             destination_lon,
-            mode="driving"
+            profile=osrm_profile
         )
+
+        if osrm_coordinates:
+
+            return (
+                osrm_coordinates,
+                "OK_FALLBACK_OSRM",
+                osrm_duration_text
+            )
+
+
+    # ----------------------------------------------------
+    # FALLBACK 2: STRAIGHT LINE, LAST RESORT.
+    # Guarantees a line is always shown between source
+    # and destination even if every routing service
+    # failed.
+    # ----------------------------------------------------
+
+    if not coordinates:
+
+        straight_line = [
+            [source_lat, source_lon],
+            [destination_lat, destination_lon]
+        ]
+
+        return (
+            straight_line,
+            "OK_FALLBACK_STRAIGHT_LINE",
+            None
+        )
+
+
+    return coordinates, status, duration_text
 
 
 # ============================================================
@@ -1493,33 +1685,70 @@ if st.session_state.show_result:
             )
 
 
-        folium.PolyLine(
+        is_straight_line_fallback = (
+            route_status == "OK_FALLBACK_STRAIGHT_LINE"
+        )
 
-            locations=route_coordinates,
+        is_osrm_fallback = (
+            route_status == "OK_FALLBACK_OSRM"
+        )
 
-            color="#a8c7fa",
 
-            weight=11,
+        if is_straight_line_fallback:
 
-            opacity=0.9,
+            # Last-resort fallback: no routing service
+            # could compute a path, so draw a dashed
+            # straight line instead of hiding the route
+            # entirely.
 
-            tooltip=route_name
+            folium.PolyLine(
 
-        ).add_to(route_map)
+                locations=route_coordinates,
 
-        folium.PolyLine(
+                color="#d93025",
 
-            locations=route_coordinates,
+                weight=4,
 
-            color="#1a73e8",
+                opacity=0.85,
 
-            weight=6,
+                dash_array="10, 10",
 
-            opacity=1.0,
+                tooltip=(
+                    route_name
+                    + " (approximate straight line)"
+                )
 
-            tooltip=route_name
+            ).add_to(route_map)
 
-        ).add_to(route_map)
+        else:
+
+            folium.PolyLine(
+
+                locations=route_coordinates,
+
+                color="#a8c7fa",
+
+                weight=11,
+
+                opacity=0.9,
+
+                tooltip=route_name
+
+            ).add_to(route_map)
+
+            folium.PolyLine(
+
+                locations=route_coordinates,
+
+                color="#1a73e8",
+
+                weight=6,
+
+                opacity=1.0,
+
+                tooltip=route_name
+
+            ).add_to(route_map)
 
 
         # ----------------------------------------------------
@@ -1527,7 +1756,7 @@ if st.session_state.show_result:
         # MAPS SHOWS ALONG THE ROUTE.
         # ----------------------------------------------------
 
-        if route_duration_text:
+        if route_duration_text and not is_straight_line_fallback:
 
             midpoint_index = len(route_coordinates) // 2
 
@@ -1563,15 +1792,49 @@ if st.session_state.show_result:
             ).add_to(route_map)
 
 
-        st.success(
-            f"✅ {route_name} displayed"
-            + (
-                f" ({route_duration_text})"
-                if route_duration_text
-                else ""
+        if is_straight_line_fallback:
+
+            st.warning(
+                f"⚠️ {route_name}: no routing service "
+                "could calculate an actual path "
+                "(Google Directions failed and free "
+                "OSRM routing also failed), so an "
+                "**approximate straight-line path** "
+                "is shown instead (dashed red)."
             )
-            + "."
-        )
+
+        elif is_osrm_fallback:
+
+            st.info(
+                f"ℹ️ Google Directions could not be "
+                "used, so this route was calculated "
+                "using the free OSRM routing service "
+                "instead. It still follows real "
+                "roads, but travel time/cost estimates "
+                "may be less precise than Google's."
+            )
+
+            st.success(
+                f"✅ {route_name} displayed"
+                + (
+                    f" ({route_duration_text})"
+                    if route_duration_text
+                    else ""
+                )
+                + " via OSRM fallback."
+            )
+
+        else:
+
+            st.success(
+                f"✅ {route_name} displayed"
+                + (
+                    f" ({route_duration_text})"
+                    if route_duration_text
+                    else ""
+                )
+                + "."
+            )
 
 
     else:
