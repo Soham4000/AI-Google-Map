@@ -141,6 +141,33 @@ def decode_polyline(encoded):
 
 
 # ============================================================
+# NOMINATIM RATE LIMITER
+# ============================================================
+#
+# Nominatim's usage policy requires at most 1 request per
+# second. This app can hit Nominatim several times in a
+# row (source geocode, destination geocode, fallback place
+# search, movie theater geocode), so every call to it must
+# go through this helper first to avoid HTTP 429 errors.
+# ============================================================
+
+_last_nominatim_call = {"time": 0.0}
+
+
+def wait_for_nominatim_slot(min_interval=1.2):
+
+    elapsed = (
+        time.time() - _last_nominatim_call["time"]
+    )
+
+    if elapsed < min_interval:
+
+        time.sleep(min_interval - elapsed)
+
+    _last_nominatim_call["time"] = time.time()
+
+
+# ============================================================
 # GET GOOGLE ROUTE
 # ============================================================
 
@@ -885,6 +912,8 @@ def search_places_nominatim(
     }
 
     try:
+
+        wait_for_nominatim_slot()
 
         response = requests.get(
             url,
@@ -1631,12 +1660,14 @@ if st.session_state.show_result:
 
             def geocode_with_retry(
                 query,
-                attempts=3
+                attempts=4
             ):
 
                 last_error = None
 
                 for attempt in range(attempts):
+
+                    wait_for_nominatim_slot()
 
                     try:
 
@@ -1646,7 +1677,16 @@ if st.session_state.show_result:
 
                         last_error = e
 
-                        time.sleep(1)
+                        if "429" in str(e):
+
+                            # Rate limited — back off much
+                            # longer than a normal retry.
+
+                            time.sleep(5 * (attempt + 1))
+
+                        else:
+
+                            time.sleep(1)
 
                 raise last_error
 
@@ -3081,7 +3121,9 @@ response.
 
                 movie_geo = None
 
-                for attempt in range(3):
+                for attempt in range(4):
+
+                    wait_for_nominatim_slot()
 
                     try:
 
@@ -3093,9 +3135,15 @@ response.
 
                         break
 
-                    except Exception:
+                    except Exception as e:
 
-                        time.sleep(1)
+                        if "429" in str(e):
+
+                            time.sleep(5 * (attempt + 1))
+
+                        else:
+
+                            time.sleep(1)
 
 
             theaters = []
