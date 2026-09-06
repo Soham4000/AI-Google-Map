@@ -1554,6 +1554,63 @@ if st.session_state.show_result:
 
 
     # ========================================================
+    # RECOMPUTE GUARD
+    # ========================================================
+    #
+    # Streamlit reruns this entire script on every single
+    # interaction — including panning, zooming, or
+    # clicking the map itself. Without this guard, every
+    # such interaction would silently redo all the network
+    # calls below (geocoding, routing, hotel/place search,
+    # and the Gemini call), which is why the map/results
+    # could seem to reset or flicker on their own.
+    #
+    # Everything is only recomputed when the trip inputs
+    # actually change, i.e. the form is submitted again.
+    # Otherwise, the previous results are reused, so the
+    # map and results stay exactly as they were until you
+    # ask for something new.
+    # ========================================================
+
+    current_trip_signature = (
+        source,
+        destination,
+        str(travel_date),
+        travelers,
+        number_of_days,
+        transport,
+        hotel_type,
+        budget,
+        food_preference,
+        places_to_visit,
+        trip_purpose,
+        travelling_with,
+        activities,
+        custom_ai_instruction,
+        movie_mood,
+        movie_genre,
+        movie_language,
+        minimum_rating,
+        movie_location
+    )
+
+    if "trip_signature" not in st.session_state:
+
+        st.session_state.trip_signature = None
+
+    if "trip_cache" not in st.session_state:
+
+        st.session_state.trip_cache = {}
+
+    recompute_needed = (
+        current_trip_signature
+        != st.session_state.trip_signature
+    )
+
+    trip_cache = st.session_state.trip_cache
+
+
+    # ========================================================
     # LOCATION DETECTION
     # ========================================================
 
@@ -1565,53 +1622,73 @@ if st.session_state.show_result:
         "📍 Detecting your locations..."
     ):
 
-        geolocator = Nominatim(
-            user_agent="ai_travel_movie_planner",
-            timeout=10
-        )
+        if recompute_needed:
 
-        def geocode_with_retry(
-            query,
-            attempts=3
-        ):
-
-            last_error = None
-
-            for attempt in range(attempts):
-
-                try:
-
-                    return geolocator.geocode(query)
-
-                except Exception as e:
-
-                    last_error = e
-
-                    time.sleep(1)
-
-            raise last_error
-
-        try:
-
-            current_location = (
-                geocode_with_retry(source)
+            geolocator = Nominatim(
+                user_agent="ai_travel_movie_planner",
+                timeout=10
             )
 
-            dest_location = (
-                geocode_with_retry(destination)
+            def geocode_with_retry(
+                query,
+                attempts=3
+            ):
+
+                last_error = None
+
+                for attempt in range(attempts):
+
+                    try:
+
+                        return geolocator.geocode(query)
+
+                    except Exception as e:
+
+                        last_error = e
+
+                        time.sleep(1)
+
+                raise last_error
+
+            try:
+
+                current_location = (
+                    geocode_with_retry(source)
+                )
+
+                dest_location = (
+                    geocode_with_retry(destination)
+                )
+
+                trip_cache["current_location"] = (
+                    current_location
+                )
+
+                trip_cache["dest_location"] = (
+                    dest_location
+                )
+
+            except Exception as e:
+
+                st.error(
+                    f"❌ Unable to detect locations: {e}. "
+                    "The free Nominatim geocoding service "
+                    "may be slow or temporarily "
+                    "unreachable — please try again in a "
+                    "moment."
+                )
+
+                st.stop()
+
+        else:
+
+            current_location = trip_cache.get(
+                "current_location"
             )
 
-        except Exception as e:
-
-            st.error(
-                f"❌ Unable to detect locations: {e}. "
-                "The free Nominatim geocoding service "
-                "may be slow or temporarily "
-                "unreachable — please try again in a "
-                "moment."
+            dest_location = trip_cache.get(
+                "dest_location"
             )
-
-            st.stop()
 
 
     if not current_location:
@@ -1646,65 +1723,85 @@ if st.session_state.show_result:
         "🛣️ Calculating distance and travel time..."
     ):
 
-        try:
+        if recompute_needed:
 
-            distance_url = (
-                "https://maps.googleapis.com/maps/api/"
-                "distancematrix/json"
-            )
+            try:
 
-            distance_params = {
-
-                "origins":
-                    f"{current_location.latitude},"
-                    f"{current_location.longitude}",
-
-                "destinations":
-                    f"{dest_location.latitude},"
-                    f"{dest_location.longitude}",
-
-                "key":
-                    GOOGLE_API_KEY
-
-            }
-
-            distance_response = requests.get(
-                distance_url,
-                params=distance_params,
-                timeout=20
-            )
-
-            distance_data = (
-                distance_response.json()
-            )
-
-            element = (
-                distance_data[
-                    "rows"
-                ][0][
-                    "elements"
-                ][0]
-            )
-
-            if element.get("status") == "OK":
-
-                distance = (
-                    element[
-                        "distance"
-                    ]["text"]
+                distance_url = (
+                    "https://maps.googleapis.com/maps/api/"
+                    "distancematrix/json"
                 )
 
-                duration = (
-                    element[
-                        "duration"
-                    ]["text"]
+                distance_params = {
+
+                    "origins":
+                        f"{current_location.latitude},"
+                        f"{current_location.longitude}",
+
+                    "destinations":
+                        f"{dest_location.latitude},"
+                        f"{dest_location.longitude}",
+
+                    "key":
+                        GOOGLE_API_KEY
+
+                }
+
+                distance_response = requests.get(
+                    distance_url,
+                    params=distance_params,
+                    timeout=20
                 )
 
-        except Exception as e:
+                distance_data = (
+                    distance_response.json()
+                )
 
-            st.warning(
-                f"⚠️ Distance calculation "
-                f"unavailable: {e}"
+                element = (
+                    distance_data[
+                        "rows"
+                    ][0][
+                        "elements"
+                    ][0]
+                )
+
+                if element.get("status") == "OK":
+
+                    distance = (
+                        element[
+                            "distance"
+                        ]["text"]
+                    )
+
+                    duration = (
+                        element[
+                            "duration"
+                        ]["text"]
+                    )
+
+                trip_cache["distance"] = distance
+                trip_cache["duration"] = duration
+
+            except Exception as e:
+
+                st.warning(
+                    f"⚠️ Distance calculation "
+                    f"unavailable: {e}"
+                )
+
+                trip_cache["distance"] = distance
+                trip_cache["duration"] = duration
+
+        else:
+
+            distance = trip_cache.get(
+                "distance",
+                "Not available"
+            )
+
+            duration = trip_cache.get(
+                "duration",
+                "Not available"
             )
 
 
@@ -1870,21 +1967,47 @@ if st.session_state.show_result:
         f"🗺️ Calculating {transport.lower()} route..."
     ):
 
-        route_coordinates, route_status, route_duration_text = (
-            get_transport_route(
+        if recompute_needed:
 
-                current_location.latitude,
+            route_coordinates, route_status, route_duration_text = (
+                get_transport_route(
 
-                current_location.longitude,
+                    current_location.latitude,
 
-                dest_location.latitude,
+                    current_location.longitude,
 
-                dest_location.longitude,
+                    dest_location.latitude,
 
-                transport
+                    dest_location.longitude,
 
+                    transport
+
+                )
             )
-        )
+
+            trip_cache["route_coordinates"] = (
+                route_coordinates
+            )
+
+            trip_cache["route_status"] = route_status
+
+            trip_cache["route_duration_text"] = (
+                route_duration_text
+            )
+
+        else:
+
+            route_coordinates = trip_cache.get(
+                "route_coordinates"
+            )
+
+            route_status = trip_cache.get(
+                "route_status"
+            )
+
+            route_duration_text = trip_cache.get(
+                "route_duration_text"
+            )
 
 
     # ========================================================
@@ -2118,13 +2241,33 @@ if st.session_state.show_result:
         "🏨 Finding hotels to mark on the map..."
     ):
 
-        hotel_places, hotel_source, hotel_status = (
-            find_places(
-                hotel_query,
-                dest_location.latitude,
-                dest_location.longitude
+        if recompute_needed:
+
+            hotel_places, hotel_source, hotel_status = (
+                find_places(
+                    hotel_query,
+                    dest_location.latitude,
+                    dest_location.longitude
+                )
             )
-        )
+
+            trip_cache["hotel_places"] = hotel_places
+            trip_cache["hotel_source"] = hotel_source
+            trip_cache["hotel_status"] = hotel_status
+
+        else:
+
+            hotel_places = trip_cache.get(
+                "hotel_places", []
+            )
+
+            hotel_source = trip_cache.get(
+                "hotel_source"
+            )
+
+            hotel_status = trip_cache.get(
+                "hotel_status"
+            )
 
     if hotel_places:
 
@@ -2179,13 +2322,41 @@ if st.session_state.show_result:
         f"near {destination}..."
     ):
 
-        attraction_places, attraction_source, attraction_status = (
-            find_places(
-                places_query,
-                dest_location.latitude,
-                dest_location.longitude
+        if recompute_needed:
+
+            attraction_places, attraction_source, attraction_status = (
+                find_places(
+                    places_query,
+                    dest_location.latitude,
+                    dest_location.longitude
+                )
             )
-        )
+
+            trip_cache["attraction_places"] = (
+                attraction_places
+            )
+
+            trip_cache["attraction_source"] = (
+                attraction_source
+            )
+
+            trip_cache["attraction_status"] = (
+                attraction_status
+            )
+
+        else:
+
+            attraction_places = trip_cache.get(
+                "attraction_places", []
+            )
+
+            attraction_source = trip_cache.get(
+                "attraction_source"
+            )
+
+            attraction_status = trip_cache.get(
+                "attraction_status"
+            )
 
     if attraction_places:
 
@@ -2240,13 +2411,41 @@ if st.session_state.show_result:
         f"{activity_label.lower()}..."
     ):
 
-        activity_places, activity_source, activity_status = (
-            find_places(
-                activity_query,
-                dest_location.latitude,
-                dest_location.longitude
+        if recompute_needed:
+
+            activity_places, activity_source, activity_status = (
+                find_places(
+                    activity_query,
+                    dest_location.latitude,
+                    dest_location.longitude
+                )
             )
-        )
+
+            trip_cache["activity_places"] = (
+                activity_places
+            )
+
+            trip_cache["activity_source"] = (
+                activity_source
+            )
+
+            trip_cache["activity_status"] = (
+                activity_status
+            )
+
+        else:
+
+            activity_places = trip_cache.get(
+                "activity_places", []
+            )
+
+            activity_source = trip_cache.get(
+                "activity_source"
+            )
+
+            activity_status = trip_cache.get(
+                "activity_status"
+            )
 
     if activity_places:
 
@@ -2608,58 +2807,85 @@ response.
         "movies) in a single request..."
     ):
 
-        try:
+        if recompute_needed:
 
-            combined_response = model.generate_content(
-                combined_prompt
+            try:
+
+                combined_response = model.generate_content(
+                    combined_prompt
+                )
+
+                full_ai_text = combined_response.text
+
+                travel_options_text = extract_section(
+                    full_ai_text,
+                    "TRAVEL_OPTIONS"
+                )
+
+                hotel_text = extract_section(
+                    full_ai_text,
+                    "HOTELS"
+                )
+
+                itinerary_text = extract_section(
+                    full_ai_text,
+                    "ITINERARY"
+                )
+
+                movie_text = extract_section(
+                    full_ai_text,
+                    "MOVIES"
+                )
+
+                # --------------------------------------------
+                # If the model did not follow the section
+                # markers exactly, fall back to showing the
+                # full raw response in every tab instead of
+                # calling the API again just to retry the
+                # format.
+                # --------------------------------------------
+
+                if not any(
+                    [
+                        travel_options_text,
+                        hotel_text,
+                        itinerary_text,
+                        movie_text
+                    ]
+                ):
+
+                    travel_options_text = full_ai_text
+                    hotel_text = full_ai_text
+                    itinerary_text = full_ai_text
+                    movie_text = full_ai_text
+
+            except Exception as e:
+
+                ai_error = str(e)
+
+            trip_cache["ai_error"] = ai_error
+            trip_cache["travel_options_text"] = (
+                travel_options_text
+            )
+            trip_cache["hotel_text"] = hotel_text
+            trip_cache["itinerary_text"] = itinerary_text
+            trip_cache["movie_text"] = movie_text
+
+        else:
+
+            ai_error = trip_cache.get("ai_error")
+
+            travel_options_text = trip_cache.get(
+                "travel_options_text"
             )
 
-            full_ai_text = combined_response.text
+            hotel_text = trip_cache.get("hotel_text")
 
-            travel_options_text = extract_section(
-                full_ai_text,
-                "TRAVEL_OPTIONS"
+            itinerary_text = trip_cache.get(
+                "itinerary_text"
             )
 
-            hotel_text = extract_section(
-                full_ai_text,
-                "HOTELS"
-            )
-
-            itinerary_text = extract_section(
-                full_ai_text,
-                "ITINERARY"
-            )
-
-            movie_text = extract_section(
-                full_ai_text,
-                "MOVIES"
-            )
-
-            # ------------------------------------------------
-            # If the model did not follow the section markers
-            # exactly, fall back to showing the full raw
-            # response in every tab instead of calling the
-            # API again just to retry the format.
-            # ------------------------------------------------
-
-            if not any(
-                [
-                    travel_options_text,
-                    hotel_text,
-                    itinerary_text,
-                    movie_text
-                ]
-            ):
-
-                travel_options_text = full_ai_text
-                hotel_text = full_ai_text
-                itinerary_text = full_ai_text
-                movie_text = full_ai_text
-
-        except Exception as e:
-
-            ai_error = str(e)
+            movie_text = trip_cache.get("movie_text")
 
 
     # ========================================================
@@ -2842,128 +3068,143 @@ response.
         # GEOCODE MOVIE LOCATION
         # ====================================================
 
-        movie_geolocator = Nominatim(
-            user_agent="ai_movie_finder",
-            timeout=10
-        )
+        if recompute_needed:
 
-        with st.spinner(
-            "📍 Finding theater location..."
-        ):
+            movie_geolocator = Nominatim(
+                user_agent="ai_movie_finder",
+                timeout=10
+            )
 
-            movie_geo = None
+            with st.spinner(
+                "📍 Finding theater location..."
+            ):
 
-            for attempt in range(3):
+                movie_geo = None
+
+                for attempt in range(3):
+
+                    try:
+
+                        movie_geo = (
+                            movie_geolocator.geocode(
+                                movie_location
+                            )
+                        )
+
+                        break
+
+                    except Exception:
+
+                        time.sleep(1)
+
+
+            theaters = []
+
+            if movie_geo:
+
+                # =============================================
+                # GOOGLE PLACES API
+                # =============================================
+
+                places_url = (
+                    "https://places.googleapis.com/v1/"
+                    "places:searchNearby"
+                )
+
+                places_headers = {
+
+                    "Content-Type":
+                        "application/json",
+
+                    "X-Goog-Api-Key":
+                        GOOGLE_API_KEY,
+
+                    "X-Goog-FieldMask":
+                        (
+                            "places.displayName,"
+                            "places.formattedAddress,"
+                            "places.location,"
+                            "places.rating,"
+                            "places.googleMapsUri"
+                        )
+                }
+
+
+                places_body = {
+
+                    "includedTypes":
+                        ["movie_theater"],
+
+                    "maxResultCount":
+                        10,
+
+                    "rankPreference":
+                        "DISTANCE",
+
+                    "locationRestriction": {
+
+                        "circle": {
+
+                            "center": {
+
+                                "latitude":
+                                    movie_geo.latitude,
+
+                                "longitude":
+                                    movie_geo.longitude
+
+                            },
+
+                            "radius":
+                                30000.0
+                        }
+                    }
+                }
+
 
                 try:
 
-                    movie_geo = (
-                        movie_geolocator.geocode(
-                            movie_location
+                    places_response = requests.post(
+
+                        places_url,
+
+                        headers=places_headers,
+
+                        json=places_body,
+
+                        timeout=20
+
+                    )
+
+                    places_data = (
+                        places_response.json()
+                    )
+
+                    theaters = (
+                        places_data.get(
+                            "places",
+                            []
                         )
                     )
 
-                    break
+                except Exception as e:
 
-                except Exception:
+                    theaters = []
 
-                    time.sleep(1)
+                    st.error(
+                        f"❌ Theater search failed: {e}"
+                    )
+
+            trip_cache["movie_geo"] = movie_geo
+            trip_cache["theaters"] = theaters
+
+        else:
+
+            movie_geo = trip_cache.get("movie_geo")
+            theaters = trip_cache.get("theaters", [])
 
 
         if movie_geo:
-
-            # =================================================
-            # GOOGLE PLACES API
-            # =================================================
-
-            places_url = (
-                "https://places.googleapis.com/v1/"
-                "places:searchNearby"
-            )
-
-            places_headers = {
-
-                "Content-Type":
-                    "application/json",
-
-                "X-Goog-Api-Key":
-                    GOOGLE_API_KEY,
-
-                "X-Goog-FieldMask":
-                    (
-                        "places.displayName,"
-                        "places.formattedAddress,"
-                        "places.location,"
-                        "places.rating,"
-                        "places.googleMapsUri"
-                    )
-            }
-
-
-            places_body = {
-
-                "includedTypes":
-                    ["movie_theater"],
-
-                "maxResultCount":
-                    10,
-
-                "rankPreference":
-                    "DISTANCE",
-
-                "locationRestriction": {
-
-                    "circle": {
-
-                        "center": {
-
-                            "latitude":
-                                movie_geo.latitude,
-
-                            "longitude":
-                                movie_geo.longitude
-
-                        },
-
-                        "radius":
-                            30000.0
-                    }
-                }
-            }
-
-
-            try:
-
-                places_response = requests.post(
-
-                    places_url,
-
-                    headers=places_headers,
-
-                    json=places_body,
-
-                    timeout=20
-
-                )
-
-                places_data = (
-                    places_response.json()
-                )
-
-                theaters = (
-                    places_data.get(
-                        "places",
-                        []
-                    )
-                )
-
-            except Exception as e:
-
-                theaters = []
-
-                st.error(
-                    f"❌ Theater search failed: {e}"
-                )
 
 
             # =================================================
@@ -3263,6 +3504,20 @@ response.
 
 
     # ========================================================
+    # MARK THIS TRIP AS COMPUTED
+    # ========================================================
+    #
+    # From here on, reruns caused by interacting with the
+    # map (panning, zooming, clicking) or any other widget
+    # will see recompute_needed == False and reuse
+    # everything above from trip_cache instead of hitting
+    # any API again.
+    # ========================================================
+
+    st.session_state.trip_signature = current_trip_signature
+
+
+    # ========================================================
     # NEW TRIP
     # ========================================================
 
@@ -3273,5 +3528,7 @@ response.
     ):
 
         st.session_state.show_result = False
+
+        st.session_state.trip_signature = None
 
         st.rerun()
