@@ -42,7 +42,7 @@ except Exception:
 # GEMINI MODEL
 # ============================================================
 
-model = genai.GenerativeModel("gemini-3.8-flash")
+model = genai.GenerativeModel("gemini-3.7-flash")
 
 
 # ============================================================
@@ -1087,6 +1087,62 @@ def add_places_to_map(
 
 
 # ============================================================
+# CATEGORY STYLES
+# ============================================================
+#
+# Every hotel type and every "places to visit" category gets
+# its own colour + icon, and its own toggle-able Folium
+# FeatureGroup / layer, so ALL of them can be marked on the
+# map at once instead of only the single option the user
+# picked in the dropdowns.
+# ============================================================
+
+HOTEL_TYPES = [
+    "Budget Hotel",
+    "3-Star Hotel",
+    "4-Star Hotel",
+    "5-Star Hotel",
+    "Resort",
+    "Boutique Hotel",
+    "Hostel"
+]
+
+HOTEL_STYLE = {
+    "Budget Hotel":    {"color": "lightgray", "icon": "bed",           "emoji": "🛏️"},
+    "3-Star Hotel":    {"color": "blue",      "icon": "bed",           "emoji": "🏨"},
+    "4-Star Hotel":    {"color": "darkblue",  "icon": "bed",           "emoji": "🏩"},
+    "5-Star Hotel":    {"color": "purple",    "icon": "star",          "emoji": "🌟"},
+    "Resort":          {"color": "darkgreen", "icon": "umbrella",      "emoji": "🏝️"},
+    "Boutique Hotel":  {"color": "pink",      "icon": "gift",          "emoji": "🎁"},
+    "Hostel":          {"color": "gray",      "icon": "bed",           "emoji": "🎒"}
+}
+
+PLACE_CATEGORIES = [
+    "Beaches",
+    "Historical Places",
+    "Nature & Wildlife",
+    "Mountains",
+    "Religious Places",
+    "Museums",
+    "Shopping Areas",
+    "Popular Tourist Attractions",
+    "Hidden Gems"
+]
+
+PLACE_STYLE = {
+    "Beaches":                     {"color": "cadetblue",  "icon": "umbrella",      "emoji": "🏖️"},
+    "Historical Places":           {"color": "darkred",    "icon": "building",      "emoji": "🏛️"},
+    "Nature & Wildlife":           {"color": "green",      "icon": "tree",          "emoji": "🌳"},
+    "Mountains":                   {"color": "darkgreen",  "icon": "compass",       "emoji": "⛰️"},
+    "Religious Places":            {"color": "beige",      "icon": "bank",          "emoji": "🛕"},
+    "Museums":                     {"color": "orange",     "icon": "university",    "emoji": "🖼️"},
+    "Shopping Areas":              {"color": "lightred",   "icon": "shopping-cart", "emoji": "🛍️"},
+    "Popular Tourist Attractions": {"color": "purple",     "icon": "star",          "emoji": "📸"},
+    "Hidden Gems":                 {"color": "black",      "icon": "magic",         "emoji": "💎"}
+}
+
+
+# ============================================================
 # TRAVEL FORM
 # ============================================================
 
@@ -2078,113 +2134,169 @@ if st.session_state.show_result:
     # ========================================================
     # HOTEL MARKERS ON THE MAP
     # ========================================================
+    #
+    # EVERY hotel type gets searched and put on its own
+    # toggle-able map layer (with its own colour/icon), not
+    # just the one the user selected in the dropdown. The
+    # user's actually-selected type (or all of them, if
+    # "No Preference") starts switched ON; the rest start
+    # OFF but can be turned on from the layer control in the
+    # top-right of the map.
+    # ========================================================
 
-    if hotel_type == "No Preference":
-
-        hotel_query = f"hotels in {destination}"
-
-    else:
-
-        hotel_query = f"{hotel_type} in {destination}"
+    hotel_layer_status = []
 
     with st.spinner(
-        "🏨 Finding hotels to mark on the map..."
+        "🏨 Finding hotels of every type to mark on the map..."
     ):
 
-        hotel_places, hotel_source, hotel_status = (
-            find_places(
-                hotel_query,
-                dest_location.latitude,
-                dest_location.longitude
+        for hotel_option in HOTEL_TYPES:
+
+            style = HOTEL_STYLE[hotel_option]
+
+            hotel_query = f"{hotel_option} in {destination}"
+
+            hotel_places, hotel_source, hotel_status = (
+                find_places(
+                    hotel_query,
+                    dest_location.latitude,
+                    dest_location.longitude,
+                    max_results=5
+                )
             )
-        )
 
-    if hotel_places:
-
-        add_places_to_map(
-            hotel_places,
-            route_map,
-            color="darkred",
-            icon_name="bed",
-            label_prefix="Hotel"
-        )
-
-        if hotel_source == "nominatim_fallback":
-
-            st.caption(
-                "🏨 Hotels marked using free "
-                "OpenStreetMap search (Google "
-                "Places was unavailable)."
+            show_layer = (
+                hotel_type == "No Preference"
+                or hotel_option == hotel_type
             )
+
+            hotel_layer = folium.FeatureGroup(
+                name=f"{style['emoji']} {hotel_option}",
+                show=show_layer
+            )
+
+            if hotel_places:
+
+                add_places_to_map(
+                    hotel_places,
+                    hotel_layer,
+                    color=style["color"],
+                    icon_name=style["icon"],
+                    label_prefix=hotel_option
+                )
+
+                hotel_layer_status.append(
+                    f"{style['emoji']} {hotel_option} "
+                    f"({len(hotel_places)}"
+                    + (
+                        ", OSM"
+                        if hotel_source == "nominatim_fallback"
+                        else ""
+                    )
+                    + ")"
+                )
+
+            hotel_layer.add_to(route_map)
+
+    if hotel_layer_status:
+
+        st.caption(
+            "🏨 Hotel layers marked: "
+            + "  ·  ".join(hotel_layer_status)
+        )
 
     else:
 
         st.caption(
-            "🏨 No hotels could be marked on the "
-            f"map. Reason: **{hotel_status}**."
+            "🏨 No hotels could be marked on the map."
         )
 
 
     # ========================================================
     # "PLACES YOU WANT TO VISIT" MARKERS ON THE MAP
     # ========================================================
+    #
+    # Same idea: every place category gets its own
+    # toggle-able layer with its own colour/icon.
+    # ========================================================
 
-    if places_to_visit == "No Preference":
-
-        places_query = (
-            f"popular tourist attractions near "
-            f"{destination}"
-        )
-
-        places_label = "Attraction"
-
-    else:
-
-        places_query = (
-            f"best {places_to_visit.lower()} "
-            f"to visit near {destination}"
-        )
-
-        places_label = places_to_visit
+    place_layer_status = []
 
     with st.spinner(
-        f"🗺️ Marking {places_label.lower()} "
-        f"near {destination}..."
+        f"🗺️ Marking every kind of place near {destination}..."
     ):
 
-        attraction_places, attraction_source, attraction_status = (
-            find_places(
-                places_query,
-                dest_location.latitude,
-                dest_location.longitude
+        for place_option in PLACE_CATEGORIES:
+
+            style = PLACE_STYLE[place_option]
+
+            place_query = (
+                f"best {place_option.lower()} "
+                f"to visit near {destination}"
             )
-        )
 
-    if attraction_places:
-
-        add_places_to_map(
-            attraction_places,
-            route_map,
-            color="purple",
-            icon_name="star",
-            label_prefix=places_label
-        )
-
-        if attraction_source == "nominatim_fallback":
-
-            st.caption(
-                f"🗺️ {places_label} marked using "
-                "free OpenStreetMap search (Google "
-                "Places was unavailable)."
+            place_places, place_source, place_status = (
+                find_places(
+                    place_query,
+                    dest_location.latitude,
+                    dest_location.longitude,
+                    max_results=5
+                )
             )
+
+            show_layer = (
+                places_to_visit == "No Preference"
+                or place_option == places_to_visit
+            )
+
+            place_layer = folium.FeatureGroup(
+                name=f"{style['emoji']} {place_option}",
+                show=show_layer
+            )
+
+            if place_places:
+
+                add_places_to_map(
+                    place_places,
+                    place_layer,
+                    color=style["color"],
+                    icon_name=style["icon"],
+                    label_prefix=place_option
+                )
+
+                place_layer_status.append(
+                    f"{style['emoji']} {place_option} "
+                    f"({len(place_places)}"
+                    + (
+                        ", OSM"
+                        if place_source == "nominatim_fallback"
+                        else ""
+                    )
+                    + ")"
+                )
+
+            place_layer.add_to(route_map)
+
+    if place_layer_status:
+
+        st.caption(
+            "🗺️ Place layers marked: "
+            + "  ·  ".join(place_layer_status)
+        )
 
     else:
 
         st.caption(
-            f"🗺️ No {places_label.lower()} "
-            "could be marked on the map. "
-            f"Reason: **{attraction_status}**."
+            "🗺️ No places could be marked on the map."
         )
+
+    # Keep the earlier variable names alive for the AI /
+    # info-panel text further down in the script.
+    places_label = (
+        places_to_visit
+        if places_to_visit != "No Preference"
+        else "Popular Tourist Attractions"
+    )
 
 
     # ========================================================
@@ -2221,11 +2333,16 @@ if st.session_state.show_result:
             )
         )
 
+    activity_layer = folium.FeatureGroup(
+        name=f"🏃 {activity_label}",
+        show=True
+    )
+
     if activity_places:
 
         add_places_to_map(
             activity_places,
-            route_map,
+            activity_layer,
             color="orange",
             icon_name="flag",
             label_prefix=activity_label
@@ -2248,22 +2365,48 @@ if st.session_state.show_result:
             f"Reason: **{activity_status}**."
         )
 
+    activity_layer.add_to(route_map)
+
+
+    # ========================================================
+    # LAYER CONTROL — lets the user toggle each hotel type
+    # and each place category on/off, independently.
+    # ========================================================
+
+    folium.LayerControl(
+        collapsed=False
+    ).add_to(route_map)
+
 
     # ========================================================
     # MAP LEGEND
     # ========================================================
 
-    legend_parts = [
-        "🟢 Start",
-        "🔴 Destination",
-        "🔵 Route",
-        "🟤 Hotels",
-        f"🟣 {places_label}",
-        f"🟠 {activity_label}"
-    ]
+    legend_parts = (
+        [
+            "🟢 Start",
+            "🔴 Destination",
+            "🔵 Route"
+        ]
+        + [
+            f"{HOTEL_STYLE[h]['emoji']} {h}"
+            for h in HOTEL_TYPES
+        ]
+        + [
+            f"{PLACE_STYLE[p]['emoji']} {p}"
+            for p in PLACE_CATEGORIES
+        ]
+        + [f"🏃 {activity_label}"]
+    )
 
     st.caption(
         "  ·  ".join(legend_parts)
+    )
+
+    st.caption(
+        "👆 Use the layer control box in the top-right "
+        "corner of the map to switch each hotel type and "
+        "place category on or off."
     )
 
 
