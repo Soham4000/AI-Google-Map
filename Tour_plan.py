@@ -1121,16 +1121,171 @@ def search_places_nominatim(
 
 
 # ============================================================
+# FREE CATEGORY SEARCH (OVERPASS API, NO API KEY NEEDED)
+# ============================================================
+#
+# Nominatim is a name/address lookup tool — it is NOT
+# built to answer "find every hotel/temple/beach near
+# this point", so natural-language category queries often
+# come back empty even when Nominatim itself is working.
+# The Overpass API queries OpenStreetMap's raw tagged data
+# directly (tourism=hotel, natural=beach, etc.), which is
+# exactly the right tool for category search, and also
+# needs no API key.
+# ============================================================
+
+HOTEL_OSM_FILTER = '"tourism"="hotel"'
+
+PLACE_CATEGORY_OSM_FILTERS = {
+
+    "No Preference": '"tourism"="attraction"',
+    "Beaches": '"natural"="beach"',
+    "Historical Places": '"historic"',
+    "Nature & Wildlife": '"leisure"="nature_reserve"',
+    "Mountains": '"natural"="peak"',
+    "Religious Places": '"amenity"="place_of_worship"',
+    "Museums": '"tourism"="museum"',
+    "Shopping Areas": '"shop"="mall"',
+    "Popular Tourist Attractions": '"tourism"="attraction"',
+    "Hidden Gems": '"tourism"="attraction"'
+
+}
+
+ACTIVITY_OSM_FILTERS = {
+
+    "No Preference": '"tourism"="attraction"',
+    "Sightseeing": '"tourism"="attraction"',
+    "Adventure Sports": '"leisure"="sports_centre"',
+    "Water Sports": '"leisure"="water_park"',
+    "Hiking": '"tourism"="viewpoint"',
+    "Shopping": '"shop"="mall"',
+    "Nightlife": '"amenity"="nightclub"',
+    "Photography": '"tourism"="viewpoint"',
+    "Relaxing": '"leisure"="park"',
+    "Cultural Activities": '"tourism"="museum"',
+    "Food Experiences": '"amenity"="restaurant"'
+
+}
+
+
+def search_places_overpass(
+    osm_filter,
+    lat,
+    lon,
+    radius=40000,
+    max_results=8,
+    label="Place"
+):
+
+    query = f"""
+    [out:json][timeout:25];
+    (
+      node[{osm_filter}](around:{radius},{lat},{lon});
+      way[{osm_filter}](around:{radius},{lat},{lon});
+    );
+    out center {max_results};
+    """
+
+    try:
+
+        response = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            headers={
+                "User-Agent": "ai_travel_movie_planner"
+            },
+            timeout=30
+        )
+
+        data = response.json()
+
+        elements = data.get("elements", [])
+
+        if not elements:
+
+            return [], "ZERO_RESULTS"
+
+        normalized_places = []
+
+        for element in elements[:max_results]:
+
+            tags = element.get("tags", {})
+
+            name = tags.get("name", label)
+
+            if element.get("type") == "node":
+
+                place_lat = element.get("lat")
+                place_lon = element.get("lon")
+
+            else:
+
+                center = element.get("center", {})
+
+                place_lat = center.get("lat")
+                place_lon = center.get("lon")
+
+            if place_lat is None or place_lon is None:
+
+                continue
+
+            address_parts = [
+                tags.get("addr:housenumber"),
+                tags.get("addr:street"),
+                tags.get("addr:city")
+            ]
+
+            address = (
+                ", ".join(
+                    part for part in address_parts
+                    if part
+                )
+                or "Address unavailable"
+            )
+
+            normalized_places.append({
+
+                "name": name,
+
+                "address": address,
+
+                "rating": "N/A",
+
+                "lat": place_lat,
+
+                "lon": place_lon,
+
+                "maps_url": build_google_maps_place_url(
+                    place_lat,
+                    place_lon
+                )
+
+            })
+
+        if not normalized_places:
+
+            return [], "ZERO_RESULTS"
+
+        return normalized_places, "OK"
+
+    except Exception as e:
+
+        return [], str(e)
+
+
+# ============================================================
 # FIND PLACES (WITH AUTOMATIC FREE FALLBACK)
 # ============================================================
 #
 # Tries Google Places first. If that fails to return any
 # results (API not enabled, no billing, quota, etc.), it
-# automatically retries with the free Nominatim search so
-# something still gets marked on the map.
+# automatically retries with the free Overpass category
+# search — much better suited to "find every X near here"
+# than Nominatim — so something still gets marked on the
+# map.
 #
 # Returns: (places, source, status)
-#   source is "google" or "nominatim_fallback"
+#   source is "google" or "overpass_fallback"
 # ============================================================
 
 def find_places(
@@ -1138,7 +1293,9 @@ def find_places(
     lat,
     lon,
     radius=40000,
-    max_results=8
+    max_results=8,
+    osm_filter=None,
+    label="Place"
 ):
 
     google_places, google_status = search_places_text(
@@ -1154,6 +1311,40 @@ def find_places(
         return google_places, "google", google_status
 
     fallback_radius_km = max(radius / 1000, 5)
+
+    # ----------------------------------------------------
+    # PREFERRED FREE FALLBACK: OVERPASS CATEGORY SEARCH
+    # ----------------------------------------------------
+    # Only used when a specific OSM tag filter is given —
+    # this is the right tool for "find every X near here".
+    # ----------------------------------------------------
+
+    overpass_status = "SKIPPED"
+
+    if osm_filter:
+
+        overpass_places, overpass_status = (
+            search_places_overpass(
+                osm_filter,
+                lat,
+                lon,
+                radius=radius,
+                max_results=max_results,
+                label=label
+            )
+        )
+
+        if overpass_places:
+
+            return (
+                overpass_places,
+                "overpass_fallback",
+                overpass_status
+            )
+
+    # ----------------------------------------------------
+    # LAST-RESORT FALLBACK: NOMINATIM FREE-TEXT SEARCH
+    # ----------------------------------------------------
 
     nominatim_places, nominatim_status = (
         search_places_nominatim(
@@ -1177,7 +1368,8 @@ def find_places(
         [],
         "none",
         f"Google: {google_status} | "
-        f"OpenStreetMap fallback: {nominatim_status}"
+        f"OSM category search: {overpass_status} | "
+        f"OSM name search: {nominatim_status}"
     )
 
 
@@ -2478,7 +2670,9 @@ if st.session_state.show_result:
                 find_places(
                     hotel_query,
                     dest_location.latitude,
-                    dest_location.longitude
+                    dest_location.longitude,
+                    osm_filter=HOTEL_OSM_FILTER,
+                    label="Hotel"
                 )
             )
 
@@ -2515,7 +2709,8 @@ if st.session_state.show_result:
         source_note = (
             " (via free OpenStreetMap search, "
             "Google Places was unavailable)"
-            if hotel_source == "nominatim_fallback"
+            if hotel_source
+            in ("nominatim_fallback", "overpass_fallback")
             else ""
         )
 
@@ -2565,7 +2760,11 @@ if st.session_state.show_result:
                 find_places(
                     places_query,
                     dest_location.latitude,
-                    dest_location.longitude
+                    dest_location.longitude,
+                    osm_filter=PLACE_CATEGORY_OSM_FILTERS.get(
+                        places_to_visit
+                    ),
+                    label=places_label
                 )
             )
 
@@ -2610,7 +2809,8 @@ if st.session_state.show_result:
         source_note = (
             " (via free OpenStreetMap search, "
             "Google Places was unavailable)"
-            if attraction_source == "nominatim_fallback"
+            if attraction_source
+            in ("nominatim_fallback", "overpass_fallback")
             else ""
         )
 
@@ -2661,7 +2861,11 @@ if st.session_state.show_result:
                 find_places(
                     activity_query,
                     dest_location.latitude,
-                    dest_location.longitude
+                    dest_location.longitude,
+                    osm_filter=ACTIVITY_OSM_FILTERS.get(
+                        activities
+                    ),
+                    label=activity_label
                 )
             )
 
@@ -2706,7 +2910,8 @@ if st.session_state.show_result:
         source_note = (
             " (via free OpenStreetMap search, "
             "Google Places was unavailable)"
-            if activity_source == "nominatim_fallback"
+            if activity_source
+            in ("nominatim_fallback", "overpass_fallback")
             else ""
         )
 
