@@ -441,6 +441,57 @@ def get_google_route(
 
 
 # ============================================================
+# ROUTE DISTANCE (HAVERSINE, NO API NEEDED)
+# ============================================================
+#
+# Sums the great-circle distance between consecutive
+# points of an already-computed route path. Used as a
+# fallback "Distance" figure when Google's Distance Matrix
+# API is unavailable — it's an estimate based on the real
+# road-following path, not a straight line, as long as
+# route_coordinates itself came from real routing (Google
+# or OSRM).
+# ============================================================
+
+def calculate_route_distance_km(coordinates):
+
+    if not coordinates or len(coordinates) < 2:
+
+        return None
+
+    total_km = 0.0
+
+    earth_radius_km = 6371.0
+
+    for index in range(len(coordinates) - 1):
+
+        lat1, lon1 = coordinates[index]
+        lat2, lon2 = coordinates[index + 1]
+
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+
+        a = (
+            math.sin(delta_phi / 2) ** 2
+            + math.cos(phi1)
+            * math.cos(phi2)
+            * math.sin(delta_lambda / 2) ** 2
+        )
+
+        c = 2 * math.atan2(
+            math.sqrt(a),
+            math.sqrt(1 - a)
+        )
+
+        total_km += earth_radius_km * c
+
+    return round(total_km, 1)
+
+
+# ============================================================
 # FLIGHT PATH
 # ============================================================
 
@@ -2089,6 +2140,68 @@ if st.session_state.show_result:
 
 
     # ========================================================
+    # GET ACTUAL ROUTE
+    # ========================================================
+    #
+    # Computed here (before Distance/Duration and the map)
+    # so its duration/path can also be used to fill in the
+    # Trip Summary card if Google's Distance Matrix API
+    # fails — it's the same route the map draws later.
+    # ========================================================
+
+    route_coordinates = None
+    route_status = None
+    route_duration_text = None
+
+
+    with st.spinner(
+        f"🗺️ Calculating {transport.lower()} route..."
+    ):
+
+        if recompute_needed:
+
+            route_coordinates, route_status, route_duration_text = (
+                get_transport_route(
+
+                    current_location.latitude,
+
+                    current_location.longitude,
+
+                    dest_location.latitude,
+
+                    dest_location.longitude,
+
+                    transport
+
+                )
+            )
+
+            trip_cache["route_coordinates"] = (
+                route_coordinates
+            )
+
+            trip_cache["route_status"] = route_status
+
+            trip_cache["route_duration_text"] = (
+                route_duration_text
+            )
+
+        else:
+
+            route_coordinates = trip_cache.get(
+                "route_coordinates"
+            )
+
+            route_status = trip_cache.get(
+                "route_status"
+            )
+
+            route_duration_text = trip_cache.get(
+                "route_duration_text"
+            )
+
+
+    # ========================================================
     # DISTANCE AND DURATION
     # ========================================================
 
@@ -2156,6 +2269,38 @@ if st.session_state.show_result:
                         ]["text"]
                     )
 
+                # ------------------------------------------------
+                # FALLBACK: Google Distance Matrix gave nothing
+                # useful (bad key, quota, etc.) — reuse the route
+                # already computed above instead of leaving the
+                # Trip Summary card stuck on "Not available".
+                # ------------------------------------------------
+
+                if (
+                    duration == "Not available"
+                    and route_duration_text
+                ):
+
+                    duration = (
+                        f"{route_duration_text} "
+                        "(estimated)"
+                    )
+
+                if distance == "Not available":
+
+                    estimated_km = (
+                        calculate_route_distance_km(
+                            route_coordinates
+                        )
+                    )
+
+                    if estimated_km:
+
+                        distance = (
+                            f"~{estimated_km} km "
+                            "(estimated)"
+                        )
+
                 trip_cache["distance"] = distance
                 trip_cache["duration"] = duration
 
@@ -2165,6 +2310,26 @@ if st.session_state.show_result:
                     f"⚠️ Distance calculation "
                     f"unavailable: {e}"
                 )
+
+                if route_duration_text:
+
+                    duration = (
+                        f"{route_duration_text} "
+                        "(estimated)"
+                    )
+
+                estimated_km = (
+                    calculate_route_distance_km(
+                        route_coordinates
+                    )
+                )
+
+                if estimated_km:
+
+                    distance = (
+                        f"~{estimated_km} km "
+                        "(estimated)"
+                    )
 
                 trip_cache["distance"] = distance
                 trip_cache["duration"] = duration
@@ -2329,62 +2494,6 @@ if st.session_state.show_result:
             color="red"
         )
     ).add_to(route_map)
-
-
-    # ========================================================
-    # GET ACTUAL ROUTE
-    # ========================================================
-
-    route_coordinates = None
-    route_status = None
-    route_duration_text = None
-
-
-    with st.spinner(
-        f"🗺️ Calculating {transport.lower()} route..."
-    ):
-
-        if recompute_needed:
-
-            route_coordinates, route_status, route_duration_text = (
-                get_transport_route(
-
-                    current_location.latitude,
-
-                    current_location.longitude,
-
-                    dest_location.latitude,
-
-                    dest_location.longitude,
-
-                    transport
-
-                )
-            )
-
-            trip_cache["route_coordinates"] = (
-                route_coordinates
-            )
-
-            trip_cache["route_status"] = route_status
-
-            trip_cache["route_duration_text"] = (
-                route_duration_text
-            )
-
-        else:
-
-            route_coordinates = trip_cache.get(
-                "route_coordinates"
-            )
-
-            route_status = trip_cache.get(
-                "route_status"
-            )
-
-            route_duration_text = trip_cache.get(
-                "route_duration_text"
-            )
 
 
     # ========================================================
