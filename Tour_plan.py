@@ -48,6 +48,88 @@ model = genai.GenerativeModel("gemini-3.7-flash")
 
 
 # ============================================================
+# VALIDATE GOOGLE MAPS API KEY (ONCE PER SESSION)
+# ============================================================
+#
+# The app degrades gracefully to free fallbacks (OSRM for
+# routes, Nominatim for places) when Google APIs fail, but
+# a bad key was previously only visible as three separate,
+# easy-to-miss warnings deep in the results. This checks it
+# once up front with a cheap Geocoding call and shows one
+# clear, actionable banner if it's actually invalid.
+# ============================================================
+
+if "google_key_checked" not in st.session_state:
+
+    st.session_state.google_key_checked = True
+
+    st.session_state.google_key_valid = True
+
+    try:
+
+        check_response = requests.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={
+                "address": "New York",
+                "key": GOOGLE_API_KEY
+            },
+            timeout=15
+        )
+
+        check_data = check_response.json()
+
+        check_status = check_data.get("status")
+
+        if check_status not in ("OK", "ZERO_RESULTS"):
+
+            st.session_state.google_key_valid = False
+
+            st.session_state.google_key_error = (
+                check_data.get(
+                    "error_message",
+                    check_status
+                )
+            )
+
+    except Exception as e:
+
+        # Do not fail the whole app on a network hiccup
+        # during this check — the per-feature fallbacks
+        # will still handle it if it's a real problem.
+
+        pass
+
+
+if not st.session_state.get("google_key_valid", True):
+
+    st.error(
+        "❌ **Your Google Maps API key isn't working**, "
+        f"so Google-based features are failing: "
+        f"*{st.session_state.get('google_key_error')}*\n\n"
+        "The app will keep working using free fallbacks "
+        "(OpenStreetMap for places, OSRM for routes), but "
+        "quality/coverage will be lower until this is "
+        "fixed. To fix it:\n\n"
+        "1. Go to [Google Cloud Console → APIs & Services "
+        "→ Credentials]"
+        "(https://console.cloud.google.com/apis/credentials) "
+        "and confirm the key is active and hasn't been "
+        "deleted or regenerated.\n"
+        "2. Make sure **billing is enabled** on that "
+        "project — these APIs require it even within the "
+        "free tier.\n"
+        "3. Confirm these APIs are enabled: **Geocoding "
+        "API, Directions API, Distance Matrix API, and "
+        "Places API (New)**.\n"
+        "4. If the key has API restrictions, make sure "
+        "all four of the above are in the allowed list.\n"
+        "5. Copy the exact current key value into your "
+        "Streamlit secrets as `GOOGLE_MAP_API_KEY` (no "
+        "extra spaces or quotes), then restart the app."
+    )
+
+
+# ============================================================
 # SESSION STATE
 # ============================================================
 
@@ -166,6 +248,65 @@ def wait_for_nominatim_slot(min_interval=1.2):
         time.sleep(min_interval - elapsed)
 
     _last_nominatim_call["time"] = time.time()
+
+
+# ============================================================
+# GOOGLE MAPS URLS (NO API KEY REQUIRED)
+# ============================================================
+#
+# These use Google's plain public URL scheme, not the
+# Maps API — so they work even when GOOGLE_MAP_API_KEY is
+# broken, unset, or restricted. Useful as a direct,
+# always-available way to see the real route/place on
+# Google Maps itself.
+# ============================================================
+
+def build_google_maps_directions_url(
+    source_lat,
+    source_lon,
+    destination_lat,
+    destination_lon,
+    transport
+):
+
+    travel_mode_map = {
+
+        "Car": "driving",
+
+        "Bus": "transit",
+
+        "Train": "transit",
+
+        "Walking": "walking",
+
+        "Bicycle": "bicycling",
+
+        "Flight": "driving"
+
+    }
+
+    travel_mode = travel_mode_map.get(
+        transport,
+        "driving"
+    )
+
+    return (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={source_lat},{source_lon}"
+        f"&destination={destination_lat},{destination_lon}"
+        f"&travelmode={travel_mode}"
+    )
+
+
+def build_google_maps_place_url(
+    lat,
+    lon
+):
+
+    return (
+        "https://www.google.com/maps/search/?api=1"
+        f"&query={lat},{lon}"
+    )
 
 
 # ============================================================
@@ -961,11 +1102,9 @@ def search_places_nominatim(
 
                 "lon": place_lon,
 
-                "maps_url": (
-                    "https://www.openstreetmap.org/"
-                    f"?mlat={place_lat}&mlon={place_lon}"
-                    "#map=17/"
-                    f"{place_lat}/{place_lon}"
+                "maps_url": build_google_maps_place_url(
+                    place_lat,
+                    place_lon
                 )
 
             })
@@ -1034,7 +1173,12 @@ def find_places(
             nominatim_status
         )
 
-    return [], "none", google_status
+    return (
+        [],
+        "none",
+        f"Google: {google_status} | "
+        f"OpenStreetMap fallback: {nominatim_status}"
+    )
 
 
 # ============================================================
@@ -1093,7 +1237,7 @@ def add_places_to_map(
 
             popup_html += (
                 f"<br><a href='{maps_url}' "
-                "target='_blank'>Open in Maps</a>"
+                "target='_blank'>Open in Google Maps</a>"
             )
 
         folium.Marker(
@@ -2636,6 +2780,32 @@ if st.session_state.show_result:
         route_map.fit_bounds(
             [south_west, north_east]
         )
+
+
+    # ========================================================
+    # OPEN IN GOOGLE MAPS (NO API KEY NEEDED)
+    # ========================================================
+    #
+    # A plain Google Maps URL, not an API call — so this
+    # works even while GOOGLE_MAP_API_KEY is broken. Opens
+    # the real route on Google's own maps/app.
+    # ========================================================
+
+    google_maps_directions_url = (
+        build_google_maps_directions_url(
+            current_location.latitude,
+            current_location.longitude,
+            dest_location.latitude,
+            dest_location.longitude,
+            transport
+        )
+    )
+
+    st.link_button(
+        "🗺️ Open This Route in Google Maps",
+        google_maps_directions_url,
+        use_container_width=True
+    )
 
 
     # ========================================================
