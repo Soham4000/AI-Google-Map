@@ -3,6 +3,7 @@ import requests
 import google.generativeai as genai
 from geopy.geocoders import Nominatim
 import folium
+from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import date
 import math
@@ -2266,6 +2267,52 @@ if st.session_state.show_result:
 
 
     # ========================================================
+    # TRACK EVERY POINT ADDED TO THE MAP
+    # ========================================================
+    #
+    # Used further down to auto-fit the map view so the
+    # route AND every hotel/attraction/activity marker are
+    # actually visible, instead of relying on a fixed low
+    # zoom level that could leave markers off-screen or
+    # too small to notice.
+    # ========================================================
+
+    all_map_points = [
+        [
+            current_location.latitude,
+            current_location.longitude
+        ],
+        [
+            dest_location.latitude,
+            dest_location.longitude
+        ]
+    ]
+
+    if route_coordinates:
+
+        all_map_points.extend(route_coordinates)
+
+
+    # ========================================================
+    # MARKER CLUSTER FOR HOTELS / ATTRACTIONS / ACTIVITIES
+    # ========================================================
+    #
+    # Hotels, places-to-visit and activity-area pins are
+    # all searched near the SAME destination point, so at
+    # a route-wide zoom level they can land almost exactly
+    # on top of each other (and the destination pin
+    # itself) and become invisible. Grouping them in a
+    # cluster shows a visible numbered badge at low zoom,
+    # which spreads into individual pins as you zoom in or
+    # click it.
+    # ========================================================
+
+    places_cluster = MarkerCluster(
+        name="Hotels & Places"
+    ).add_to(route_map)
+
+
+    # ========================================================
     # HOTEL MARKERS ON THE MAP
     # ========================================================
 
@@ -2311,25 +2358,31 @@ if st.session_state.show_result:
 
     if hotel_places:
 
-        add_places_to_map(
+        hotel_marker_points = add_places_to_map(
             hotel_places,
-            route_map,
+            places_cluster,
             color="darkred",
             icon_name="bed",
             label_prefix="Hotel"
         )
 
-        if hotel_source == "nominatim_fallback":
+        all_map_points.extend(hotel_marker_points)
 
-            st.caption(
-                "🏨 Hotels marked using free "
-                "OpenStreetMap search (Google "
-                "Places was unavailable)."
-            )
+        source_note = (
+            " (via free OpenStreetMap search, "
+            "Google Places was unavailable)"
+            if hotel_source == "nominatim_fallback"
+            else ""
+        )
+
+        st.success(
+            f"🏨 {len(hotel_places)} hotel(s) "
+            f"marked on the map{source_note}."
+        )
 
     else:
 
-        st.caption(
+        st.warning(
             "🏨 No hotels could be marked on the "
             f"map. Reason: **{hotel_status}**."
         )
@@ -2400,25 +2453,32 @@ if st.session_state.show_result:
 
     if attraction_places:
 
-        add_places_to_map(
+        attraction_marker_points = add_places_to_map(
             attraction_places,
-            route_map,
+            places_cluster,
             color="purple",
             icon_name="star",
             label_prefix=places_label
         )
 
-        if attraction_source == "nominatim_fallback":
+        all_map_points.extend(attraction_marker_points)
 
-            st.caption(
-                f"🗺️ {places_label} marked using "
-                "free OpenStreetMap search (Google "
-                "Places was unavailable)."
-            )
+        source_note = (
+            " (via free OpenStreetMap search, "
+            "Google Places was unavailable)"
+            if attraction_source == "nominatim_fallback"
+            else ""
+        )
+
+        st.success(
+            f"🗺️ {len(attraction_places)} "
+            f"{places_label.lower()} marked on "
+            f"the map{source_note}."
+        )
 
     else:
 
-        st.caption(
+        st.warning(
             f"🗺️ No {places_label.lower()} "
             "could be marked on the map. "
             f"Reason: **{attraction_status}**."
@@ -2489,25 +2549,32 @@ if st.session_state.show_result:
 
     if activity_places:
 
-        add_places_to_map(
+        activity_marker_points = add_places_to_map(
             activity_places,
-            route_map,
+            places_cluster,
             color="orange",
             icon_name="flag",
             label_prefix=activity_label
         )
 
-        if activity_source == "nominatim_fallback":
+        all_map_points.extend(activity_marker_points)
 
-            st.caption(
-                f"🏃 {activity_label} areas marked "
-                "using free OpenStreetMap search "
-                "(Google Places was unavailable)."
-            )
+        source_note = (
+            " (via free OpenStreetMap search, "
+            "Google Places was unavailable)"
+            if activity_source == "nominatim_fallback"
+            else ""
+        )
+
+        st.success(
+            f"🏃 {len(activity_places)} "
+            f"{activity_label.lower()} area(s) "
+            f"marked on the map{source_note}."
+        )
 
     else:
 
-        st.caption(
+        st.warning(
             f"🏃 No best areas for "
             f"{activity_label.lower()} could be "
             f"marked on the map. "
@@ -2531,6 +2598,44 @@ if st.session_state.show_result:
     st.caption(
         "  ·  ".join(legend_parts)
     )
+
+
+    # ========================================================
+    # FIT MAP VIEW TO EVERYTHING ON IT
+    # ========================================================
+    #
+    # Without this, the map stays at a fixed low zoom
+    # level centered on the midpoint of the route — at
+    # that zoom, hotel/attraction/activity pins clustered
+    # near the destination can be tiny, overlapping, or
+    # effectively invisible. Fitting the bounds to every
+    # point actually placed on the map (route + all
+    # markers) guarantees everything is visible on load.
+    # ========================================================
+
+    if len(all_map_points) >= 2:
+
+        latitudes = [
+            point[0] for point in all_map_points
+        ]
+
+        longitudes = [
+            point[1] for point in all_map_points
+        ]
+
+        south_west = [
+            min(latitudes),
+            min(longitudes)
+        ]
+
+        north_east = [
+            max(latitudes),
+            max(longitudes)
+        ]
+
+        route_map.fit_bounds(
+            [south_west, north_east]
+        )
 
 
     # ========================================================
