@@ -3,7 +3,6 @@ import requests
 import google.generativeai as genai
 from geopy.geocoders import Nominatim
 import folium
-from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from datetime import date
 import math
@@ -45,88 +44,6 @@ except Exception:
 # ============================================================
 
 model = genai.GenerativeModel("gemini-3.7-flash")
-
-
-# ============================================================
-# VALIDATE GOOGLE MAPS API KEY (ONCE PER SESSION)
-# ============================================================
-#
-# The app degrades gracefully to free fallbacks (OSRM for
-# routes, Nominatim for places) when Google APIs fail, but
-# a bad key was previously only visible as three separate,
-# easy-to-miss warnings deep in the results. This checks it
-# once up front with a cheap Geocoding call and shows one
-# clear, actionable banner if it's actually invalid.
-# ============================================================
-
-if "google_key_checked" not in st.session_state:
-
-    st.session_state.google_key_checked = True
-
-    st.session_state.google_key_valid = True
-
-    try:
-
-        check_response = requests.get(
-            "https://maps.googleapis.com/maps/api/geocode/json",
-            params={
-                "address": "New York",
-                "key": GOOGLE_API_KEY
-            },
-            timeout=15
-        )
-
-        check_data = check_response.json()
-
-        check_status = check_data.get("status")
-
-        if check_status not in ("OK", "ZERO_RESULTS"):
-
-            st.session_state.google_key_valid = False
-
-            st.session_state.google_key_error = (
-                check_data.get(
-                    "error_message",
-                    check_status
-                )
-            )
-
-    except Exception as e:
-
-        # Do not fail the whole app on a network hiccup
-        # during this check — the per-feature fallbacks
-        # will still handle it if it's a real problem.
-
-        pass
-
-
-if not st.session_state.get("google_key_valid", True):
-
-    st.error(
-        "❌ **Your Google Maps API key isn't working**, "
-        f"so Google-based features are failing: "
-        f"*{st.session_state.get('google_key_error')}*\n\n"
-        "The app will keep working using free fallbacks "
-        "(OpenStreetMap for places, OSRM for routes), but "
-        "quality/coverage will be lower until this is "
-        "fixed. To fix it:\n\n"
-        "1. Go to [Google Cloud Console → APIs & Services "
-        "→ Credentials]"
-        "(https://console.cloud.google.com/apis/credentials) "
-        "and confirm the key is active and hasn't been "
-        "deleted or regenerated.\n"
-        "2. Make sure **billing is enabled** on that "
-        "project — these APIs require it even within the "
-        "free tier.\n"
-        "3. Confirm these APIs are enabled: **Geocoding "
-        "API, Directions API, Distance Matrix API, and "
-        "Places API (New)**.\n"
-        "4. If the key has API restrictions, make sure "
-        "all four of the above are in the allowed list.\n"
-        "5. Copy the exact current key value into your "
-        "Streamlit secrets as `GOOGLE_MAP_API_KEY` (no "
-        "extra spaces or quotes), then restart the app."
-    )
 
 
 # ============================================================
@@ -248,65 +165,6 @@ def wait_for_nominatim_slot(min_interval=1.2):
         time.sleep(min_interval - elapsed)
 
     _last_nominatim_call["time"] = time.time()
-
-
-# ============================================================
-# GOOGLE MAPS URLS (NO API KEY REQUIRED)
-# ============================================================
-#
-# These use Google's plain public URL scheme, not the
-# Maps API — so they work even when GOOGLE_MAP_API_KEY is
-# broken, unset, or restricted. Useful as a direct,
-# always-available way to see the real route/place on
-# Google Maps itself.
-# ============================================================
-
-def build_google_maps_directions_url(
-    source_lat,
-    source_lon,
-    destination_lat,
-    destination_lon,
-    transport
-):
-
-    travel_mode_map = {
-
-        "Car": "driving",
-
-        "Bus": "transit",
-
-        "Train": "transit",
-
-        "Walking": "walking",
-
-        "Bicycle": "bicycling",
-
-        "Flight": "driving"
-
-    }
-
-    travel_mode = travel_mode_map.get(
-        transport,
-        "driving"
-    )
-
-    return (
-        "https://www.google.com/maps/dir/?api=1"
-        f"&origin={source_lat},{source_lon}"
-        f"&destination={destination_lat},{destination_lon}"
-        f"&travelmode={travel_mode}"
-    )
-
-
-def build_google_maps_place_url(
-    lat,
-    lon
-):
-
-    return (
-        "https://www.google.com/maps/search/?api=1"
-        f"&query={lat},{lon}"
-    )
 
 
 # ============================================================
@@ -438,57 +296,6 @@ def get_google_route(
     except Exception as e:
 
         return None, str(e), None
-
-
-# ============================================================
-# ROUTE DISTANCE (HAVERSINE, NO API NEEDED)
-# ============================================================
-#
-# Sums the great-circle distance between consecutive
-# points of an already-computed route path. Used as a
-# fallback "Distance" figure when Google's Distance Matrix
-# API is unavailable — it's an estimate based on the real
-# road-following path, not a straight line, as long as
-# route_coordinates itself came from real routing (Google
-# or OSRM).
-# ============================================================
-
-def calculate_route_distance_km(coordinates):
-
-    if not coordinates or len(coordinates) < 2:
-
-        return None
-
-    total_km = 0.0
-
-    earth_radius_km = 6371.0
-
-    for index in range(len(coordinates) - 1):
-
-        lat1, lon1 = coordinates[index]
-        lat2, lon2 = coordinates[index + 1]
-
-        phi1 = math.radians(lat1)
-        phi2 = math.radians(lat2)
-
-        delta_phi = math.radians(lat2 - lat1)
-        delta_lambda = math.radians(lon2 - lon1)
-
-        a = (
-            math.sin(delta_phi / 2) ** 2
-            + math.cos(phi1)
-            * math.cos(phi2)
-            * math.sin(delta_lambda / 2) ** 2
-        )
-
-        c = 2 * math.atan2(
-            math.sqrt(a),
-            math.sqrt(1 - a)
-        )
-
-        total_km += earth_radius_km * c
-
-    return round(total_km, 1)
 
 
 # ============================================================
@@ -1153,162 +960,11 @@ def search_places_nominatim(
 
                 "lon": place_lon,
 
-                "maps_url": build_google_maps_place_url(
-                    place_lat,
-                    place_lon
-                )
-
-            })
-
-        if not normalized_places:
-
-            return [], "ZERO_RESULTS"
-
-        return normalized_places, "OK"
-
-    except Exception as e:
-
-        return [], str(e)
-
-
-# ============================================================
-# FREE CATEGORY SEARCH (OVERPASS API, NO API KEY NEEDED)
-# ============================================================
-#
-# Nominatim is a name/address lookup tool — it is NOT
-# built to answer "find every hotel/temple/beach near
-# this point", so natural-language category queries often
-# come back empty even when Nominatim itself is working.
-# The Overpass API queries OpenStreetMap's raw tagged data
-# directly (tourism=hotel, natural=beach, etc.), which is
-# exactly the right tool for category search, and also
-# needs no API key.
-# ============================================================
-
-HOTEL_OSM_FILTER = '"tourism"="hotel"'
-
-PLACE_CATEGORY_OSM_FILTERS = {
-
-    "No Preference": '"tourism"="attraction"',
-    "Beaches": '"natural"="beach"',
-    "Historical Places": '"historic"',
-    "Nature & Wildlife": '"leisure"="nature_reserve"',
-    "Mountains": '"natural"="peak"',
-    "Religious Places": '"amenity"="place_of_worship"',
-    "Museums": '"tourism"="museum"',
-    "Shopping Areas": '"shop"="mall"',
-    "Popular Tourist Attractions": '"tourism"="attraction"',
-    "Hidden Gems": '"tourism"="attraction"'
-
-}
-
-ACTIVITY_OSM_FILTERS = {
-
-    "No Preference": '"tourism"="attraction"',
-    "Sightseeing": '"tourism"="attraction"',
-    "Adventure Sports": '"leisure"="sports_centre"',
-    "Water Sports": '"leisure"="water_park"',
-    "Hiking": '"tourism"="viewpoint"',
-    "Shopping": '"shop"="mall"',
-    "Nightlife": '"amenity"="nightclub"',
-    "Photography": '"tourism"="viewpoint"',
-    "Relaxing": '"leisure"="park"',
-    "Cultural Activities": '"tourism"="museum"',
-    "Food Experiences": '"amenity"="restaurant"'
-
-}
-
-
-def search_places_overpass(
-    osm_filter,
-    lat,
-    lon,
-    radius=40000,
-    max_results=8,
-    label="Place"
-):
-
-    query = f"""
-    [out:json][timeout:25];
-    (
-      node[{osm_filter}](around:{radius},{lat},{lon});
-      way[{osm_filter}](around:{radius},{lat},{lon});
-    );
-    out center {max_results};
-    """
-
-    try:
-
-        response = requests.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            headers={
-                "User-Agent": "ai_travel_movie_planner"
-            },
-            timeout=30
-        )
-
-        data = response.json()
-
-        elements = data.get("elements", [])
-
-        if not elements:
-
-            return [], "ZERO_RESULTS"
-
-        normalized_places = []
-
-        for element in elements[:max_results]:
-
-            tags = element.get("tags", {})
-
-            name = tags.get("name", label)
-
-            if element.get("type") == "node":
-
-                place_lat = element.get("lat")
-                place_lon = element.get("lon")
-
-            else:
-
-                center = element.get("center", {})
-
-                place_lat = center.get("lat")
-                place_lon = center.get("lon")
-
-            if place_lat is None or place_lon is None:
-
-                continue
-
-            address_parts = [
-                tags.get("addr:housenumber"),
-                tags.get("addr:street"),
-                tags.get("addr:city")
-            ]
-
-            address = (
-                ", ".join(
-                    part for part in address_parts
-                    if part
-                )
-                or "Address unavailable"
-            )
-
-            normalized_places.append({
-
-                "name": name,
-
-                "address": address,
-
-                "rating": "N/A",
-
-                "lat": place_lat,
-
-                "lon": place_lon,
-
-                "maps_url": build_google_maps_place_url(
-                    place_lat,
-                    place_lon
+                "maps_url": (
+                    "https://www.openstreetmap.org/"
+                    f"?mlat={place_lat}&mlon={place_lon}"
+                    "#map=17/"
+                    f"{place_lat}/{place_lon}"
                 )
 
             })
@@ -1330,13 +986,11 @@ def search_places_overpass(
 #
 # Tries Google Places first. If that fails to return any
 # results (API not enabled, no billing, quota, etc.), it
-# automatically retries with the free Overpass category
-# search — much better suited to "find every X near here"
-# than Nominatim — so something still gets marked on the
-# map.
+# automatically retries with the free Nominatim search so
+# something still gets marked on the map.
 #
 # Returns: (places, source, status)
-#   source is "google" or "overpass_fallback"
+#   source is "google" or "nominatim_fallback"
 # ============================================================
 
 def find_places(
@@ -1344,9 +998,7 @@ def find_places(
     lat,
     lon,
     radius=40000,
-    max_results=8,
-    osm_filter=None,
-    label="Place"
+    max_results=8
 ):
 
     google_places, google_status = search_places_text(
@@ -1362,40 +1014,6 @@ def find_places(
         return google_places, "google", google_status
 
     fallback_radius_km = max(radius / 1000, 5)
-
-    # ----------------------------------------------------
-    # PREFERRED FREE FALLBACK: OVERPASS CATEGORY SEARCH
-    # ----------------------------------------------------
-    # Only used when a specific OSM tag filter is given —
-    # this is the right tool for "find every X near here".
-    # ----------------------------------------------------
-
-    overpass_status = "SKIPPED"
-
-    if osm_filter:
-
-        overpass_places, overpass_status = (
-            search_places_overpass(
-                osm_filter,
-                lat,
-                lon,
-                radius=radius,
-                max_results=max_results,
-                label=label
-            )
-        )
-
-        if overpass_places:
-
-            return (
-                overpass_places,
-                "overpass_fallback",
-                overpass_status
-            )
-
-    # ----------------------------------------------------
-    # LAST-RESORT FALLBACK: NOMINATIM FREE-TEXT SEARCH
-    # ----------------------------------------------------
 
     nominatim_places, nominatim_status = (
         search_places_nominatim(
@@ -1415,13 +1033,7 @@ def find_places(
             nominatim_status
         )
 
-    return (
-        [],
-        "none",
-        f"Google: {google_status} | "
-        f"OSM category search: {overpass_status} | "
-        f"OSM name search: {nominatim_status}"
-    )
+    return [], "none", google_status
 
 
 # ============================================================
@@ -1480,7 +1092,7 @@ def add_places_to_map(
 
             popup_html += (
                 f"<br><a href='{maps_url}' "
-                "target='_blank'>Open in Google Maps</a>"
+                "target='_blank'>Open in Maps</a>"
             )
 
         folium.Marker(
@@ -2140,68 +1752,6 @@ if st.session_state.show_result:
 
 
     # ========================================================
-    # GET ACTUAL ROUTE
-    # ========================================================
-    #
-    # Computed here (before Distance/Duration and the map)
-    # so its duration/path can also be used to fill in the
-    # Trip Summary card if Google's Distance Matrix API
-    # fails — it's the same route the map draws later.
-    # ========================================================
-
-    route_coordinates = None
-    route_status = None
-    route_duration_text = None
-
-
-    with st.spinner(
-        f"🗺️ Calculating {transport.lower()} route..."
-    ):
-
-        if recompute_needed:
-
-            route_coordinates, route_status, route_duration_text = (
-                get_transport_route(
-
-                    current_location.latitude,
-
-                    current_location.longitude,
-
-                    dest_location.latitude,
-
-                    dest_location.longitude,
-
-                    transport
-
-                )
-            )
-
-            trip_cache["route_coordinates"] = (
-                route_coordinates
-            )
-
-            trip_cache["route_status"] = route_status
-
-            trip_cache["route_duration_text"] = (
-                route_duration_text
-            )
-
-        else:
-
-            route_coordinates = trip_cache.get(
-                "route_coordinates"
-            )
-
-            route_status = trip_cache.get(
-                "route_status"
-            )
-
-            route_duration_text = trip_cache.get(
-                "route_duration_text"
-            )
-
-
-    # ========================================================
     # DISTANCE AND DURATION
     # ========================================================
 
@@ -2269,38 +1819,6 @@ if st.session_state.show_result:
                         ]["text"]
                     )
 
-                # ------------------------------------------------
-                # FALLBACK: Google Distance Matrix gave nothing
-                # useful (bad key, quota, etc.) — reuse the route
-                # already computed above instead of leaving the
-                # Trip Summary card stuck on "Not available".
-                # ------------------------------------------------
-
-                if (
-                    duration == "Not available"
-                    and route_duration_text
-                ):
-
-                    duration = (
-                        f"{route_duration_text} "
-                        "(estimated)"
-                    )
-
-                if distance == "Not available":
-
-                    estimated_km = (
-                        calculate_route_distance_km(
-                            route_coordinates
-                        )
-                    )
-
-                    if estimated_km:
-
-                        distance = (
-                            f"~{estimated_km} km "
-                            "(estimated)"
-                        )
-
                 trip_cache["distance"] = distance
                 trip_cache["duration"] = duration
 
@@ -2310,26 +1828,6 @@ if st.session_state.show_result:
                     f"⚠️ Distance calculation "
                     f"unavailable: {e}"
                 )
-
-                if route_duration_text:
-
-                    duration = (
-                        f"{route_duration_text} "
-                        "(estimated)"
-                    )
-
-                estimated_km = (
-                    calculate_route_distance_km(
-                        route_coordinates
-                    )
-                )
-
-                if estimated_km:
-
-                    distance = (
-                        f"~{estimated_km} km "
-                        "(estimated)"
-                    )
 
                 trip_cache["distance"] = distance
                 trip_cache["duration"] = duration
@@ -2494,6 +1992,62 @@ if st.session_state.show_result:
             color="red"
         )
     ).add_to(route_map)
+
+
+    # ========================================================
+    # GET ACTUAL ROUTE
+    # ========================================================
+
+    route_coordinates = None
+    route_status = None
+    route_duration_text = None
+
+
+    with st.spinner(
+        f"🗺️ Calculating {transport.lower()} route..."
+    ):
+
+        if recompute_needed:
+
+            route_coordinates, route_status, route_duration_text = (
+                get_transport_route(
+
+                    current_location.latitude,
+
+                    current_location.longitude,
+
+                    dest_location.latitude,
+
+                    dest_location.longitude,
+
+                    transport
+
+                )
+            )
+
+            trip_cache["route_coordinates"] = (
+                route_coordinates
+            )
+
+            trip_cache["route_status"] = route_status
+
+            trip_cache["route_duration_text"] = (
+                route_duration_text
+            )
+
+        else:
+
+            route_coordinates = trip_cache.get(
+                "route_coordinates"
+            )
+
+            route_status = trip_cache.get(
+                "route_status"
+            )
+
+            route_duration_text = trip_cache.get(
+                "route_duration_text"
+            )
 
 
     # ========================================================
@@ -2712,52 +2266,6 @@ if st.session_state.show_result:
 
 
     # ========================================================
-    # TRACK EVERY POINT ADDED TO THE MAP
-    # ========================================================
-    #
-    # Used further down to auto-fit the map view so the
-    # route AND every hotel/attraction/activity marker are
-    # actually visible, instead of relying on a fixed low
-    # zoom level that could leave markers off-screen or
-    # too small to notice.
-    # ========================================================
-
-    all_map_points = [
-        [
-            current_location.latitude,
-            current_location.longitude
-        ],
-        [
-            dest_location.latitude,
-            dest_location.longitude
-        ]
-    ]
-
-    if route_coordinates:
-
-        all_map_points.extend(route_coordinates)
-
-
-    # ========================================================
-    # MARKER CLUSTER FOR HOTELS / ATTRACTIONS / ACTIVITIES
-    # ========================================================
-    #
-    # Hotels, places-to-visit and activity-area pins are
-    # all searched near the SAME destination point, so at
-    # a route-wide zoom level they can land almost exactly
-    # on top of each other (and the destination pin
-    # itself) and become invisible. Grouping them in a
-    # cluster shows a visible numbered badge at low zoom,
-    # which spreads into individual pins as you zoom in or
-    # click it.
-    # ========================================================
-
-    places_cluster = MarkerCluster(
-        name="Hotels & Places"
-    ).add_to(route_map)
-
-
-    # ========================================================
     # HOTEL MARKERS ON THE MAP
     # ========================================================
 
@@ -2779,9 +2287,7 @@ if st.session_state.show_result:
                 find_places(
                     hotel_query,
                     dest_location.latitude,
-                    dest_location.longitude,
-                    osm_filter=HOTEL_OSM_FILTER,
-                    label="Hotel"
+                    dest_location.longitude
                 )
             )
 
@@ -2805,32 +2311,25 @@ if st.session_state.show_result:
 
     if hotel_places:
 
-        hotel_marker_points = add_places_to_map(
+        add_places_to_map(
             hotel_places,
-            places_cluster,
+            route_map,
             color="darkred",
             icon_name="bed",
             label_prefix="Hotel"
         )
 
-        all_map_points.extend(hotel_marker_points)
+        if hotel_source == "nominatim_fallback":
 
-        source_note = (
-            " (via free OpenStreetMap search, "
-            "Google Places was unavailable)"
-            if hotel_source
-            in ("nominatim_fallback", "overpass_fallback")
-            else ""
-        )
-
-        st.success(
-            f"🏨 {len(hotel_places)} hotel(s) "
-            f"marked on the map{source_note}."
-        )
+            st.caption(
+                "🏨 Hotels marked using free "
+                "OpenStreetMap search (Google "
+                "Places was unavailable)."
+            )
 
     else:
 
-        st.warning(
+        st.caption(
             "🏨 No hotels could be marked on the "
             f"map. Reason: **{hotel_status}**."
         )
@@ -2869,11 +2368,7 @@ if st.session_state.show_result:
                 find_places(
                     places_query,
                     dest_location.latitude,
-                    dest_location.longitude,
-                    osm_filter=PLACE_CATEGORY_OSM_FILTERS.get(
-                        places_to_visit
-                    ),
-                    label=places_label
+                    dest_location.longitude
                 )
             )
 
@@ -2905,33 +2400,25 @@ if st.session_state.show_result:
 
     if attraction_places:
 
-        attraction_marker_points = add_places_to_map(
+        add_places_to_map(
             attraction_places,
-            places_cluster,
+            route_map,
             color="purple",
             icon_name="star",
             label_prefix=places_label
         )
 
-        all_map_points.extend(attraction_marker_points)
+        if attraction_source == "nominatim_fallback":
 
-        source_note = (
-            " (via free OpenStreetMap search, "
-            "Google Places was unavailable)"
-            if attraction_source
-            in ("nominatim_fallback", "overpass_fallback")
-            else ""
-        )
-
-        st.success(
-            f"🗺️ {len(attraction_places)} "
-            f"{places_label.lower()} marked on "
-            f"the map{source_note}."
-        )
+            st.caption(
+                f"🗺️ {places_label} marked using "
+                "free OpenStreetMap search (Google "
+                "Places was unavailable)."
+            )
 
     else:
 
-        st.warning(
+        st.caption(
             f"🗺️ No {places_label.lower()} "
             "could be marked on the map. "
             f"Reason: **{attraction_status}**."
@@ -2970,11 +2457,7 @@ if st.session_state.show_result:
                 find_places(
                     activity_query,
                     dest_location.latitude,
-                    dest_location.longitude,
-                    osm_filter=ACTIVITY_OSM_FILTERS.get(
-                        activities
-                    ),
-                    label=activity_label
+                    dest_location.longitude
                 )
             )
 
@@ -3006,33 +2489,25 @@ if st.session_state.show_result:
 
     if activity_places:
 
-        activity_marker_points = add_places_to_map(
+        add_places_to_map(
             activity_places,
-            places_cluster,
+            route_map,
             color="orange",
             icon_name="flag",
             label_prefix=activity_label
         )
 
-        all_map_points.extend(activity_marker_points)
+        if activity_source == "nominatim_fallback":
 
-        source_note = (
-            " (via free OpenStreetMap search, "
-            "Google Places was unavailable)"
-            if activity_source
-            in ("nominatim_fallback", "overpass_fallback")
-            else ""
-        )
-
-        st.success(
-            f"🏃 {len(activity_places)} "
-            f"{activity_label.lower()} area(s) "
-            f"marked on the map{source_note}."
-        )
+            st.caption(
+                f"🏃 {activity_label} areas marked "
+                "using free OpenStreetMap search "
+                "(Google Places was unavailable)."
+            )
 
     else:
 
-        st.warning(
+        st.caption(
             f"🏃 No best areas for "
             f"{activity_label.lower()} could be "
             f"marked on the map. "
@@ -3055,70 +2530,6 @@ if st.session_state.show_result:
 
     st.caption(
         "  ·  ".join(legend_parts)
-    )
-
-
-    # ========================================================
-    # FIT MAP VIEW TO EVERYTHING ON IT
-    # ========================================================
-    #
-    # Without this, the map stays at a fixed low zoom
-    # level centered on the midpoint of the route — at
-    # that zoom, hotel/attraction/activity pins clustered
-    # near the destination can be tiny, overlapping, or
-    # effectively invisible. Fitting the bounds to every
-    # point actually placed on the map (route + all
-    # markers) guarantees everything is visible on load.
-    # ========================================================
-
-    if len(all_map_points) >= 2:
-
-        latitudes = [
-            point[0] for point in all_map_points
-        ]
-
-        longitudes = [
-            point[1] for point in all_map_points
-        ]
-
-        south_west = [
-            min(latitudes),
-            min(longitudes)
-        ]
-
-        north_east = [
-            max(latitudes),
-            max(longitudes)
-        ]
-
-        route_map.fit_bounds(
-            [south_west, north_east]
-        )
-
-
-    # ========================================================
-    # OPEN IN GOOGLE MAPS (NO API KEY NEEDED)
-    # ========================================================
-    #
-    # A plain Google Maps URL, not an API call — so this
-    # works even while GOOGLE_MAP_API_KEY is broken. Opens
-    # the real route on Google's own maps/app.
-    # ========================================================
-
-    google_maps_directions_url = (
-        build_google_maps_directions_url(
-            current_location.latitude,
-            current_location.longitude,
-            dest_location.latitude,
-            dest_location.longitude,
-            transport
-        )
-    )
-
-    st.link_button(
-        "🗺️ Open This Route in Google Maps",
-        google_maps_directions_url,
-        use_container_width=True
     )
 
 
